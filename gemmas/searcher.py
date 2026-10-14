@@ -117,3 +117,70 @@ class GemmaSearchEngine:
             results.append((chunks[idx], round(score, 4)))
             
         return results
+
+    def compute_line_saliency(
+        self,
+        query: str,
+        chunks: List[Dict[str, Any]],
+        mode: str = "code"
+    ) -> None:
+        """
+        Second pass: Batch-encodes individual lines of top chunks to compute
+        fine-grained similarity heatmaps and attaches `chunk['line_scores'] = {offset: score}`.
+        """
+        if not chunks:
+            return
+
+        q_prompt = "CodeRetrieval" if mode == "code" else "Retrieval"
+        doc_prompt = "document"
+
+        available = getattr(self.model, "prompts", {})
+        q_p = q_prompt if q_prompt in available else None
+        d_p = doc_prompt if doc_prompt in available else None
+
+        with torch.inference_mode():
+            # 1. Encode query
+            q_vec = self.model.encode(
+                [query],
+                prompt_name=q_p,
+                truncate_dim=self.dim,
+                normalize_embeddings=True,
+                show_progress_bar=False
+            )
+
+            # 2. Gather non-empty lines across all chunks
+            all_lines = []
+            line_map = []  # (chunk, line_offset, line_str)
+
+            for chunk in chunks:
+                chunk["line_scores"] = {}
+                text_lines = chunk.get("text", "").splitlines()
+                for offset, l in enumerate(text_lines):
+                    stripped = l.strip()
+                    if len(stripped) >= 3:
+                        all_lines.append(stripped)
+                        line_map.append((chunk, offset, l))
+
+            if not all_lines:
+                return
+
+            # 3. Batch encode all lines in a single fast forward pass (<20ms)
+            line_vecs = self.model.encode(
+                all_lines,
+                prompt_name=d_p,
+                truncate_dim=self.dim,
+                normalize_embeddings=True,
+                batch_size=min(64, self.batch_size * 2),
+                show_progress_bar=False
+            )
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # 4. Dot products
+        sims = np.dot(line_vecs, q_vec.T).flatten()
+
+        # 5. Populate chunk["line_scores"]
+        for (chunk, offset, _), score in zip(line_map, sims):
+            chunk["line_scores"][offset] = round(float(score), 4)
+

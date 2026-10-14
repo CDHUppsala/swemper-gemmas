@@ -44,7 +44,8 @@ def format_terminal_output(
     file_count: int,
     elapsed_ms: float,
     mode: str,
-    dim_size: int
+    dim_size: int,
+    heat_threshold: float = 0.70
 ) -> str:
     if not results:
         return f"\n{yellow('No matching chunks found for query:')} {bold(repr(query))}\n"
@@ -59,6 +60,7 @@ def format_terminal_output(
         abs_path = str(Path(rel_path).resolve())
         start = chunk["start_line"]
         end = chunk["end_line"]
+        line_scores = chunk.get("line_scores", {})
         
         # Clickable URI
         file_uri = f"file://{abs_path}#L{start}-L{end}"
@@ -67,15 +69,26 @@ def format_terminal_output(
         lines.append(f"    {dim(file_uri)}")
         lines.append("    " + "-" * 62)
 
-        # Print excerpt (up to 12 lines)
+        # Print excerpt (up to 14 lines)
         text_lines = chunk["text"].splitlines()
-        preview = text_lines[:12]
+        preview = text_lines[:14]
         for offset, l in enumerate(preview):
             lineno = start + offset
-            lines.append(f"    {dim(f'{lineno:>5} │')} {l}")
+            l_score = line_scores.get(offset, 0.0)
 
-        if len(text_lines) > 12:
-            remaining = len(text_lines) - 12
+            if l_score >= 0.78:
+                # Hot line: Gold/yellow highlight with star
+                gutter = f"{dim(f'{lineno:>5} │')} " + c(f"★ {l_score:.3f}", "1;33") + " │ "
+                lines.append(f"    {gutter}{bold(l)}")
+            elif l_score >= heat_threshold:
+                # Warm line: Cyan/green highlight
+                gutter = f"{dim(f'{lineno:>5} │')} " + c(f"  {l_score:.3f}", "32") + " │ "
+                lines.append(f"    {gutter}{green(l)}")
+            else:
+                lines.append(f"    {dim(f'{lineno:>5} │')} {l}")
+
+        if len(text_lines) > 14:
+            remaining = len(text_lines) - 14
             lines.append(f"    {dim(f'      │ ... ({remaining} more lines)')}")
 
     lines.append("\n" + "=" * 70)
@@ -91,12 +104,26 @@ def format_json_output(
     file_count: int,
     elapsed_ms: float,
     mode: str,
-    dim_size: int
+    dim_size: int,
+    heat_threshold: float = 0.70
 ) -> str:
     matches = []
     for rank, (chunk, score) in enumerate(results, 1):
         abs_path = str(Path(chunk["path"]).resolve())
-        matches.append({
+        line_scores = chunk.get("line_scores", {})
+        
+        highlighted = []
+        text_lines = chunk["text"].splitlines()
+        for offset, l in enumerate(text_lines):
+            l_score = line_scores.get(offset, 0.0)
+            if l_score >= heat_threshold:
+                highlighted.append({
+                    "line_no": chunk["start_line"] + offset,
+                    "score": l_score,
+                    "text": l
+                })
+
+        match_entry = {
             "rank": rank,
             "path": chunk["path"],
             "absolute_path": abs_path,
@@ -104,7 +131,11 @@ def format_json_output(
             "end_line": chunk["end_line"],
             "score": score,
             "text": chunk["text"]
-        })
+        }
+        if highlighted:
+            match_entry["highlighted_lines"] = highlighted
+
+        matches.append(match_entry)
 
     payload = {
         "query": query,

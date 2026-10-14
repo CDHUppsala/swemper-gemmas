@@ -98,6 +98,18 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Launch interactive terminal browser to navigate matches and inspect full chunks with arrow keys"
     )
     parser.add_argument(
+        "-H", "--heat", "--highlight",
+        dest="heat",
+        action="store_true",
+        help="Run second-pass line-level semantic heatmap to highlight and colorize top matching lines"
+    )
+    parser.add_argument(
+        "--heat-threshold",
+        type=float,
+        default=0.70,
+        help="Minimum similarity threshold for line-level highlighting (default: 0.70)"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -148,7 +160,7 @@ def main(argv: List[str] | None = None) -> int:
     if search_mode == "auto":
         search_mode = infer_mode(files)
 
-    # 4. Initialize search engine and compute scores
+    # 4. Initialize search engine and compute scores (Pass 1: Coarse Chunks)
     engine = GemmaSearchEngine(
         model_name=args.model,
         device=args.device,
@@ -165,6 +177,14 @@ def main(argv: List[str] | None = None) -> int:
         show_progress=(not args.json and not args.interactive and len(all_chunks) > 50)
     )
 
+    # Optional Pass 2: Line-Level Saliency Heatmap
+    if args.heat and results:
+        engine.compute_line_saliency(
+            query=args.query,
+            chunks=[r[0] for r in results],
+            mode=search_mode
+        )
+
     elapsed_ms = (time.perf_counter() - start_total) * 1000
 
     # 5. Output
@@ -173,7 +193,8 @@ def main(argv: List[str] | None = None) -> int:
             results=results,
             query=args.query,
             mode=search_mode,
-            dim_size=args.dim
+            dim_size=args.dim,
+            heat_threshold=args.heat_threshold
         )
     elif args.json:
         sys.stdout.write(format_json_output(
@@ -183,7 +204,8 @@ def main(argv: List[str] | None = None) -> int:
             file_count=len(files),
             elapsed_ms=elapsed_ms,
             mode=search_mode,
-            dim_size=args.dim
+            dim_size=args.dim,
+            heat_threshold=args.heat_threshold
         ) + "\n")
     else:
         sys.stdout.write(format_terminal_output(
@@ -193,7 +215,8 @@ def main(argv: List[str] | None = None) -> int:
             file_count=len(files),
             elapsed_ms=elapsed_ms,
             mode=search_mode,
-            dim_size=args.dim
+            dim_size=args.dim,
+            heat_threshold=args.heat_threshold
         ) + "\n")
 
     return 0

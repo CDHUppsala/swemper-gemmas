@@ -57,8 +57,9 @@ positional arguments:
 options:
   -h, --help            Show help message
   -n, --limit LIMIT     Max matches to return (default: 5)
-  -e, --ext EXT         Comma-separated extensions (e.g. 'py,ts,md')
   -i, --interactive     Interactive split-view TUI to browse and inspect full chunks
+  -H, --heat            Run second-pass line-level semantic heatmap to highlight key lines
+  --heat-threshold N    Threshold for line highlighting (default: 0.70)
   --mode {auto,code,text}
                         Search mode (default: auto)
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
@@ -94,7 +95,15 @@ options:
 ./gemmas/bin/gemmas "behandling av kolera eller epidemier" TAXONOMY.py --mode text
 ```
 
-### Pipe JSON Output to `jq`
+### Search with Second-Pass Line-Level Heatmap Highlighting (`-H` / `--heat`)
 ```bash
-./gemmas/bin/gemmas "GPU cache clearing" run_pilot.py --json | jq '.matches[0]'
+./gemmas/bin/gemmas "kolera epidemi" data -H
+```
+- First pass identifies winning 35-line chunk candidates across all files.
+- Second pass runs in $< 20\text{ms}$ on GPU across the top matches to compute per-line semantic similarity.
+- Top hit lines ($\ge 0.78$) are flagged with `★ score` and highlighted in bold gold/yellow.
+
+### Pipe JSON Output with Saliency Scores to `jq`
+```bash
+./gemmas/bin/gemmas "kolera epidemi" data -H --limit 1 --json | jq '.matches[0].highlighted_lines'
 ```

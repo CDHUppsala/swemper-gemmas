@@ -17,7 +17,8 @@ def run_interactive_browser(
     results: List[Tuple[Dict[str, Any], float]],
     query: str,
     mode: str,
-    dim_size: int
+    dim_size: int,
+    heat_threshold: float = 0.70
 ) -> None:
     if not curses:
         sys.stderr.write("Error: 'curses' library is not available on this platform.\n")
@@ -152,6 +153,7 @@ def run_interactive_browser(
 
             # Chunk Lines with scroll support
             chunk_lines = sel_chunk["text"].splitlines()
+            line_scores = sel_chunk.get("line_scores", {})
             visible_code_lines = detail_h - 2
 
             # Clamp detail scroll
@@ -165,12 +167,27 @@ def run_interactive_browser(
                 curr_y = d_y + offset
                 if curr_y >= h - 2:
                     break
-                line_no = sel_chunk["start_line"] + slice_start + offset
-                lineno_str = f"{line_no:>5} │ "
+                line_idx = slice_start + offset
+                line_no = sel_chunk["start_line"] + line_idx
+                l_score = line_scores.get(line_idx, 0.0)
+
+                if l_score >= 0.78:
+                    lineno_str = f"{line_no:>5} │ ★ {l_score:.3f} │ "
+                    code_attr = (curses.color_pair(1) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                    lineno_attr = (curses.color_pair(3) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                elif l_score >= heat_threshold:
+                    lineno_str = f"{line_no:>5} │   {l_score:.3f} │ "
+                    code_attr = (curses.color_pair(2) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                    lineno_attr = curses.color_pair(2) if curses.has_colors() else curses.A_DIM
+                else:
+                    lineno_str = f"{line_no:>5} │ "
+                    code_attr = curses.A_NORMAL
+                    lineno_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
+
                 code_str = l.replace("\t", "    ")
                 try:
-                    stdscr.addstr(curr_y, detail_x, lineno_str, curses.color_pair(5) if curses.has_colors() else curses.A_DIM)
-                    stdscr.addstr(curr_y, detail_x + len(lineno_str), code_str[:detail_w - len(lineno_str) - 1])
+                    stdscr.addstr(curr_y, detail_x, lineno_str, lineno_attr)
+                    stdscr.addstr(curr_y, detail_x + len(lineno_str), code_str[:detail_w - len(lineno_str) - 1], code_attr)
                 except curses.error:
                     pass
 
