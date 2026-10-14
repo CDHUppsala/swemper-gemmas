@@ -4,6 +4,7 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
+import re
 import warnings
 import logging
 from typing import List, Dict, Any, Tuple
@@ -16,6 +17,14 @@ logging.getLogger("sentence_transformers").setLevel(logging.ERROR)
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 
 from sentence_transformers import SentenceTransformer
+
+def dehyphenate(text: str) -> str:
+    """
+    Soft dehyphenation for historical OCR: joins hyphenated line breaks
+    (e.g. 'känne-\\ndom' -> 'kännedom') into single compound words for model encoding.
+    """
+    return re.sub(r"([^\W\d_]+)[-‐‑\xad]\s*\r?\n\s*([^\W\d_]+)", r"\1\2", text)
+
 
 def get_device(requested: str = "auto") -> str:
     if requested != "auto":
@@ -57,6 +66,7 @@ class GemmaSearchEngine:
         chunks: List[Dict[str, Any]],
         mode: str = "code",
         limit: int = 5,
+        dehyphen: bool = True,
         show_progress: bool = False,
         progress_callback: Any = None
     ) -> List[Tuple[Dict[str, Any], float]]:
@@ -85,9 +95,12 @@ class GemmaSearchEngine:
             # 3. Format & encode candidates
             # Prepend context metadata for code and text
             candidate_texts = []
+            apply_dehyphen = dehyphen and mode != "code"
             for c in chunks:
                 path_str = c.get("path", "")
                 snippet = c.get("text", "")
+                if apply_dehyphen:
+                    snippet = dehyphenate(snippet)
                 if mode == "code":
                     formatted = f"Context: {path_str}:{c.get('start_line', 1)}\nCode:\n{snippet}"
                 else:
@@ -144,7 +157,8 @@ class GemmaSearchEngine:
         self,
         query: str,
         chunks: List[Dict[str, Any]],
-        mode: str = "code"
+        mode: str = "code",
+        dehyphen: bool = True
     ) -> None:
         """
         Second pass: Batch-encodes individual lines of top chunks to compute
@@ -159,6 +173,8 @@ class GemmaSearchEngine:
         available = getattr(self.model, "prompts", {})
         q_p = q_prompt if q_prompt in available else None
         d_p = doc_prompt if doc_prompt in available else None
+
+        apply_dehyphen = dehyphen and mode != "code"
 
         with torch.inference_mode():
             # 1. Encode query
@@ -177,11 +193,31 @@ class GemmaSearchEngine:
             for chunk in chunks:
                 chunk["line_scores"] = {}
                 text_lines = chunk.get("text", "").splitlines()
+                n_lines = len(text_lines)
                 for offset, l in enumerate(text_lines):
                     stripped = l.strip()
-                    if len(stripped) >= 3:
-                        all_lines.append(stripped)
-                        line_map.append((chunk, offset, l))
+                    if len(stripped) < 3:
+                        continue
+
+                    eval_line = stripped
+                    if apply_dehyphen:
+                        # 1. Complete trailing hyphen from next line
+                        if offset + 1 < n_lines:
+                            m_end = re.search(r"([^\W\d_]+)[-‐‑\xad]\s*$", stripped)
+                            next_stripped = text_lines[offset + 1].strip()
+                            m_next = re.match(r"^([^\W\d_]+)", next_stripped)
+                            if m_end and m_next:
+                                eval_line = stripped[:m_end.start()] + m_end.group(1) + m_next.group(1)
+                        # 2. Complete leading continuation from previous line
+                        if offset > 0:
+                            prev_stripped = text_lines[offset - 1].strip()
+                            m_prev = re.search(r"([^\W\d_]+)[-‐‑\xad]\s*$", prev_stripped)
+                            m_start = re.match(r"^([^\W\d_]+)", eval_line)
+                            if m_prev and m_start:
+                                eval_line = m_prev.group(1) + eval_line
+
+                    all_lines.append(eval_line)
+                    line_map.append((chunk, offset, l))
 
             if not all_lines:
                 return

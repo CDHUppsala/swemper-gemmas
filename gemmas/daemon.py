@@ -190,6 +190,7 @@ class GemmasDaemon:
                 limit = req.get("limit", 5)
                 dim = req.get("dim", self.dim)
                 heat = req.get("heat", False)
+                dehyphen = req.get("dehyphen", True)
 
                 # Update engine dim if requested differently
                 orig_dim = self.engine.dim
@@ -213,6 +214,7 @@ class GemmasDaemon:
                     chunks=chunks,
                     mode=mode,
                     limit=limit,
+                    dehyphen=dehyphen,
                     show_progress=False,
                     progress_callback=on_batch_progress
                 )
@@ -228,7 +230,8 @@ class GemmasDaemon:
                     self.engine.compute_line_saliency(
                         query=query,
                         chunks=top_chunks,
-                        mode=mode
+                        mode=mode,
+                        dehyphen=dehyphen
                     )
 
                     try:

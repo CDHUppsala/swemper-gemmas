@@ -217,6 +217,12 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Bypass background daemon and run model directly in-process"
     )
     parser.add_argument(
+        "--dehyphen",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Enable/disable automatic soft dehyphenation of line-broken words in text mode (default: enabled; disable with --no-dehyphen)"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -304,7 +310,8 @@ def main(argv: List[str] | None = None) -> int:
                 "mode": search_mode,
                 "limit": args.limit,
                 "dim": args.dim,
-                "heat": args.heat
+                "heat": args.heat,
+                "dehyphen": args.dehyphen
             }, timeout=180.0, show_feedback=show_feedback)
             if resp and resp.get("status") == "ok":
                 results = []
@@ -333,6 +340,7 @@ def main(argv: List[str] | None = None) -> int:
             chunks=all_chunks,
             mode=search_mode,
             limit=args.limit,
+            dehyphen=args.dehyphen,
             show_progress=(show_feedback and len(all_chunks) > 50)
         )
         if args.heat and results:
@@ -341,7 +349,8 @@ def main(argv: List[str] | None = None) -> int:
             engine.compute_line_saliency(
                 query=args.query,
                 chunks=[r[0] for r in results],
-                mode=search_mode
+                mode=search_mode,
+                dehyphen=args.dehyphen
             )
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000

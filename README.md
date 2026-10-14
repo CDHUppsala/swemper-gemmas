@@ -68,6 +68,8 @@ options:
   --overlap N           Overlap between chunks in lines for lines strategy (default: 3)
   --cooldown N          Daemon inactivity cooldown in seconds (default: 300 = 5 min)
   --no-daemon           Bypass background daemon and run model directly in-process
+  --dehyphen, --no-dehyphen
+                        Enable/disable soft dehyphenation of line-broken compound words (default: enabled)
   --mode {auto,code,text}
                         Search mode (default: auto)
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
