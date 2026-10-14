@@ -60,6 +60,8 @@ options:
   -i, --interactive     Interactive split-view TUI to browse and inspect full chunks
   -H, --heat            Run second-pass line-level semantic heatmap to highlight key lines
   --heat-threshold N    Threshold for line highlighting (default: 0.70)
+  --cooldown N          Daemon inactivity cooldown in seconds (default: 300 = 5 min)
+  --no-daemon           Bypass background daemon and run model directly in-process
   --mode {auto,code,text}
                         Search mode (default: auto)
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
@@ -69,6 +71,12 @@ options:
   --max-seq-len N       Max token length to bound memory (default: 512)
   --json                Output structured JSON
   -v, --version         Show version
+
+Daemon management commands:
+  gemmas daemon status  Inspect running daemon, VRAM usage, and idle cooldown countdown
+  gemmas daemon stop    Stop daemon immediately and free GPU memory
+  gemmas daemon start   Pre-warm daemon and load model in background
+  gemmas daemon logs    View daemon log output
 ```
 
 ---
@@ -107,3 +115,18 @@ options:
 ```bash
 ./gemmas/bin/gemmas "kolera epidemi" data -H --limit 1 --json | jq '.matches[0].highlighted_lines'
 ```
+
+### Self-Managing Background Daemon & Inactivity Cooldown
+By default, `gemmas` automatically launches a background daemon over a local Unix domain socket (`~/.cache/gemmas/daemon.sock`).
+- **First Search**: Starts daemon and loads Gemma model into GPU memory (~4.5s).
+- **Subsequent Searches**: Run against the warm model in memory (**< 80ms** per search).
+- **Autonomous Cooldown**: The daemon monitors its own idle time. If no queries are received within 5 minutes (`--cooldown 300`), it shuts down automatically and frees all VRAM.
+- **Inspect Daemon**:
+  ```bash
+  ./gemmas/bin/gemmas daemon status
+  ```
+- **Stop Daemon Manually**:
+  ```bash
+  ./gemmas/bin/gemmas daemon stop
+  ```
+- **Run Without Daemon**: Pass `--no-daemon` to execute completely in-process.

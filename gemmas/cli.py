@@ -13,11 +13,88 @@ from .chunker import collect_files, chunk_file, infer_mode
 from .searcher import GemmaSearchEngine
 from .formatter import format_terminal_output, format_json_output
 from .interactive import run_interactive_browser
+from .daemon import (
+    ensure_daemon,
+    is_daemon_alive,
+    daemon_rpc,
+    get_socket_path,
+    get_log_path,
+)
+
+def handle_daemon_command(cmd_args: List[str]) -> int:
+    cmd = cmd_args[0] if cmd_args else "status"
+    sock_path = get_socket_path()
+    log_path = get_log_path()
+
+    if cmd == "status":
+        resp = daemon_rpc({"action": "status"})
+        if resp and resp.get("status") == "running":
+            vram = resp.get("vram", {})
+            vram_str = f"{vram.get('allocated_mb', 0):.1f} MB" if "allocated_mb" in vram else "N/A"
+            dev_name = vram.get("device_name", resp.get("device", "auto"))
+            idle = resp.get("idle_seconds", 0)
+            cooldown = resp.get("cooldown", 300)
+            remaining = max(0, cooldown - idle)
+            rem_m, rem_s = divmod(int(remaining), 60)
+
+            print(f"Gemmas Daemon: RUNNING (PID {resp.get('pid')})")
+            print(f"  Model:           {resp.get('model')}")
+            print(f"  Device:          {resp.get('device')} ({dev_name})")
+            print(f"  VRAM Allocated:  {vram_str}")
+            print(f"  Uptime:          {resp.get('uptime_seconds', 0):.1f}s")
+            print(f"  Total Requests:  {resp.get('total_requests', 0)}")
+            print(f"  Idle Timer:      {idle:.1f}s / {cooldown}s (unloads in {rem_m}m {rem_s}s)")
+            print(f"  Socket:          {sock_path}")
+            return 0
+        else:
+            print(f"Gemmas Daemon: NOT RUNNING")
+            print(f"  Socket:          {sock_path} (inactive)")
+            return 0
+
+    elif cmd == "stop":
+        resp = daemon_rpc({"action": "stop"})
+        if resp and resp.get("status") in ("stopping", "ok"):
+            print("Gemmas Daemon: Stopped successfully.")
+        else:
+            if sock_path.exists():
+                try:
+                    sock_path.unlink()
+                except OSError:
+                    pass
+            print("Gemmas Daemon: Not running (or already stopped).")
+        return 0
+
+    elif cmd == "start":
+        if is_daemon_alive(sock_path):
+            print("Gemmas Daemon: Already running.")
+            return 0
+        ok = ensure_daemon(verbose=True)
+        return 0 if ok else 1
+
+    elif cmd == "logs":
+        if log_path.exists():
+            lines = log_path.read_text().splitlines()[-30:]
+            print("\n".join(lines))
+        else:
+            print("No daemon logs found.")
+        return 0
+
+    else:
+        print(f"Unknown daemon command: '{cmd}'. Available: status, stop, start, logs")
+        return 1
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog="gemmas",
-        description="Fast on-the-fly semantic code and text search powered by Google EmbeddingGemma-2."
+        description="Fast on-the-fly semantic code and text search powered by Google EmbeddingGemma-2.",
+        epilog=(
+            "Daemon management:\n"
+            "  gemmas daemon status   Check daemon status, idle cooldown, and VRAM\n"
+            "  gemmas daemon stop     Stop daemon immediately and free GPU memory\n"
+            "  gemmas daemon start    Pre-warm daemon and load model in background\n"
+            "  gemmas daemon logs     View recent daemon logs\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument(
         "query",
@@ -110,6 +187,17 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Minimum similarity threshold for line-level highlighting (default: 0.70)"
     )
     parser.add_argument(
+        "--cooldown",
+        type=int,
+        default=300,
+        help="Daemon inactivity cooldown in seconds before unloading model from VRAM (default: 300 = 5 min)"
+    )
+    parser.add_argument(
+        "--no-daemon",
+        action="store_true",
+        help="Bypass background daemon and run model directly in-process"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -123,6 +211,10 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 def main(argv: List[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
+    if raw_args and raw_args[0] == "daemon":
+        return handle_daemon_command(raw_args[1:])
+
     args = parse_args(argv)
     target_path = Path(args.path)
 
@@ -160,30 +252,57 @@ def main(argv: List[str] | None = None) -> int:
     if search_mode == "auto":
         search_mode = infer_mode(files)
 
-    # 4. Initialize search engine and compute scores (Pass 1: Coarse Chunks)
-    engine = GemmaSearchEngine(
-        model_name=args.model,
-        device=args.device,
-        dim=args.dim,
-        batch_size=args.batch_size,
-        max_seq_length=args.max_seq_len
-    )
-
-    results = engine.search(
-        query=args.query,
-        chunks=all_chunks,
-        mode=search_mode,
-        limit=args.limit,
-        show_progress=(not args.json and not args.interactive and len(all_chunks) > 50)
-    )
-
-    # Optional Pass 2: Line-Level Saliency Heatmap
-    if args.heat and results:
-        engine.compute_line_saliency(
-            query=args.query,
-            chunks=[r[0] for r in results],
-            mode=search_mode
+    # 4. Search Execution (Daemon IPC or in-process)
+    results = None
+    if not args.no_daemon:
+        # Check or launch daemon
+        ready = ensure_daemon(
+            cooldown=args.cooldown,
+            model_name=args.model,
+            device=args.device,
+            dim=args.dim,
+            batch_size=args.batch_size,
+            max_seq_length=args.max_seq_len,
+            verbose=(not args.json and not args.interactive)
         )
+        if ready:
+            resp = daemon_rpc({
+                "action": "search",
+                "query": args.query,
+                "chunks": all_chunks,
+                "mode": search_mode,
+                "limit": args.limit,
+                "dim": args.dim,
+                "heat": args.heat
+            }, timeout=120.0)
+            if resp and resp.get("status") == "ok":
+                results = [(m["chunk"], m["score"]) for m in resp["matches"]]
+            else:
+                if not args.json:
+                    sys.stderr.write("[-] Daemon RPC returned error, falling back to local engine.\n")
+
+    if results is None:
+        # Local in-process fallback
+        engine = GemmaSearchEngine(
+            model_name=args.model,
+            device=args.device,
+            dim=args.dim,
+            batch_size=args.batch_size,
+            max_seq_length=args.max_seq_len
+        )
+        results = engine.search(
+            query=args.query,
+            chunks=all_chunks,
+            mode=search_mode,
+            limit=args.limit,
+            show_progress=(not args.json and not args.interactive and len(all_chunks) > 50)
+        )
+        if args.heat and results:
+            engine.compute_line_saliency(
+                query=args.query,
+                chunks=[r[0] for r in results],
+                mode=search_mode
+            )
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000
 
