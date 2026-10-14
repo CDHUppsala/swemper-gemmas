@@ -76,7 +76,7 @@ def format_terminal_output(
 
         for offset, l in enumerate(preview):
             lineno = start + offset
-            l_score = line_scores.get(offset, 0.0)
+            l_score = line_scores.get(offset) if line_scores.get(offset) is not None else line_scores.get(str(offset), 0.0)
 
             if has_heat:
                 if l_score >= 0.78:
@@ -127,7 +127,7 @@ def format_json_output(
         highlighted = []
         text_lines = chunk["text"].splitlines()
         for offset, l in enumerate(text_lines):
-            l_score = line_scores.get(offset, 0.0)
+            l_score = line_scores.get(offset) if line_scores.get(offset) is not None else line_scores.get(str(offset), 0.0)
             if l_score >= heat_threshold:
                 highlighted.append({
                     "line_no": chunk["start_line"] + offset,

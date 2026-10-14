@@ -17,6 +17,7 @@ from .daemon import (
     ensure_daemon,
     is_daemon_alive,
     daemon_rpc,
+    daemon_search_rpc,
     get_socket_path,
     get_log_path,
 )
@@ -252,6 +253,9 @@ def main(argv: List[str] | None = None) -> int:
     if search_mode == "auto":
         search_mode = infer_mode(files)
 
+    if not args.json and not args.interactive:
+        sys.stderr.write(f"[*] Scanned {len(files)} files -> {len(all_chunks)} candidate chunks\n")
+
     # 4. Search Execution (Daemon IPC or in-process)
     results = None
     if not args.no_daemon:
@@ -266,7 +270,7 @@ def main(argv: List[str] | None = None) -> int:
             verbose=(not args.json and not args.interactive)
         )
         if ready:
-            resp = daemon_rpc({
+            resp = daemon_search_rpc({
                 "action": "search",
                 "query": args.query,
                 "chunks": all_chunks,
@@ -274,9 +278,16 @@ def main(argv: List[str] | None = None) -> int:
                 "limit": args.limit,
                 "dim": args.dim,
                 "heat": args.heat
-            }, timeout=120.0)
+            }, timeout=180.0, show_feedback=(not args.json and not args.interactive))
             if resp and resp.get("status") == "ok":
-                results = [(m["chunk"], m["score"]) for m in resp["matches"]]
+                results = []
+                for m in resp.get("matches", []):
+                    c = m["chunk"]
+                    if "line_scores" in c and isinstance(c["line_scores"], dict):
+                        c["line_scores"] = {
+                            int(k): float(v) for k, v in c["line_scores"].items() if str(k).isdigit()
+                        }
+                    results.append((c, m["score"]))
             else:
                 if not args.json:
                     sys.stderr.write("[-] Daemon RPC returned error, falling back to local engine.\n")

@@ -171,7 +171,7 @@ def run_interactive_browser(
                     break
                 line_idx = slice_start + offset
                 line_no = sel_chunk["start_line"] + line_idx
-                l_score = line_scores.get(line_idx, 0.0)
+                l_score = line_scores.get(line_idx) if line_scores.get(line_idx) is not None else line_scores.get(str(line_idx), 0.0)
 
                 if has_heat:
                     if l_score >= 0.78:

@@ -156,6 +156,9 @@ class GemmasDaemon:
                 idle = round(time.time() - self.last_activity, 1)
                 send_msg(conn, {
                     "status": "ok",
+                    "pid": os.getpid(),
+                    "model": self.model_name,
+                    "device": self.active_device,
                     "uptime_seconds": round(time.time() - self.start_time, 1),
                     "idle_seconds": idle,
                     "cooldown": self.cooldown,
@@ -192,23 +195,46 @@ class GemmasDaemon:
                 orig_dim = self.engine.dim
                 self.engine.dim = dim
 
+                def on_batch_progress(batch_num: int, total_batches: int, done_chunks: int, total_chunks: int) -> None:
+                    try:
+                        send_msg(conn, {
+                            "type": "progress",
+                            "batch": batch_num,
+                            "total_batches": total_batches,
+                            "chunks_done": done_chunks,
+                            "total_chunks": total_chunks
+                        })
+                    except OSError:
+                        pass
+
                 # Pass 1: Coarse search
                 ranked_results = self.engine.search(
                     query=query,
                     chunks=chunks,
                     mode=mode,
                     limit=limit,
-                    show_progress=False
+                    show_progress=False,
+                    progress_callback=on_batch_progress
                 )
 
                 # Pass 2: Line saliency
                 if heat and ranked_results:
+                    try:
+                        send_msg(conn, {"type": "status", "stage": "heat_start"})
+                    except OSError:
+                        pass
+
                     top_chunks = [r[0] for r in ranked_results]
                     self.engine.compute_line_saliency(
                         query=query,
                         chunks=top_chunks,
                         mode=mode
                     )
+
+                    try:
+                        send_msg(conn, {"type": "status", "stage": "heat_done"})
+                    except OSError:
+                        pass
 
                 self.engine.dim = orig_dim
 
@@ -221,6 +247,7 @@ class GemmasDaemon:
                     })
 
                 send_msg(conn, {
+                    "type": "result",
                     "status": "ok",
                     "matches": matches,
                     "vram": self.get_vram_info()
@@ -336,6 +363,21 @@ def spawn_daemon(
             start_new_session=True
         )
 
+def get_daemon_info() -> Optional[Dict[str, Any]]:
+    sock_path = get_socket_path()
+    if not sock_path.exists():
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(1.0)
+        s.connect(str(sock_path))
+        send_msg(s, {"action": "ping"})
+        resp = recv_msg(s)
+        s.close()
+        return resp
+    except OSError:
+        return None
+
 def ensure_daemon(
     cooldown: int = 300,
     model_name: str = "google/embeddinggemma-2",
@@ -348,6 +390,12 @@ def ensure_daemon(
 ) -> bool:
     sock_path = get_socket_path()
     if is_daemon_alive(sock_path):
+        if verbose:
+            info = get_daemon_info()
+            if info:
+                dev = info.get("vram", {}).get("device_name", info.get("device", "GPU"))
+                pid = info.get("pid", "active")
+                sys.stderr.write(f"[*] Connected to active gemmas daemon (PID {pid}, {dev})\n")
         return True
 
     if verbose:
@@ -366,7 +414,10 @@ def ensure_daemon(
     while time.time() - start < timeout_sec:
         if is_daemon_alive(sock_path):
             if verbose:
-                sys.stderr.write("[*] Gemma daemon ready in memory.\n")
+                info = get_daemon_info()
+                dev = info.get("vram", {}).get("device_name", info.get("device", "GPU")) if info else "GPU"
+                pid = info.get("pid", "active") if info else "active"
+                sys.stderr.write(f"[*] Gemma daemon ready in memory (PID {pid}, {dev}).\n")
             return True
         time.sleep(0.3)
 
@@ -387,6 +438,62 @@ def daemon_rpc(payload: Dict[str, Any], timeout: float = 60.0) -> Optional[Dict[
         return resp
     except Exception as e:
         logger.debug(f"RPC error: {e}")
+        return None
+
+def daemon_search_rpc(
+    payload: Dict[str, Any],
+    timeout: float = 180.0,
+    show_feedback: bool = True
+) -> Optional[Dict[str, Any]]:
+    sock_path = get_socket_path()
+    if not sock_path.exists():
+        return None
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(str(sock_path))
+        send_msg(s, payload)
+
+        while True:
+            msg = recv_msg(s)
+            if not msg:
+                break
+
+            msg_type = msg.get("type", "result" if "matches" in msg else None)
+
+            if msg_type == "progress":
+                if show_feedback:
+                    b = msg["batch"]
+                    total_b = msg["total_batches"]
+                    done = msg["chunks_done"]
+                    total = msg["total_chunks"]
+                    pct = int(done / total * 100) if total else 100
+                    bar_w = 20
+                    filled = int(bar_w * (done / total)) if total else bar_w
+                    bar = "█" * filled + "░" * (bar_w - filled)
+                    sys.stderr.write(
+                        f"\r\033[K[*] Daemon encoding: [{bar}] {pct}% ({done}/{total} chunks, batch {b}/{total_b})"
+                    )
+                    sys.stderr.flush()
+
+            elif msg_type == "status":
+                stage = msg.get("stage")
+                if show_feedback:
+                    if stage == "heat_start":
+                        sys.stderr.write("\r\033[K[*] Pass 2: Computing line-level saliency heatmaps...\n")
+                        sys.stderr.flush()
+
+            elif msg_type == "result" or "matches" in msg:
+                if show_feedback:
+                    sys.stderr.write("\r\033[K")
+                    sys.stderr.flush()
+                s.close()
+                return msg
+
+        s.close()
+        return None
+    except Exception as e:
+        logger.debug(f"RPC search error: {e}")
         return None
 
 # --- Entrypoint for python -m gemmas.daemon ---

@@ -57,7 +57,8 @@ class GemmaSearchEngine:
         chunks: List[Dict[str, Any]],
         mode: str = "code",
         limit: int = 5,
-        show_progress: bool = False
+        show_progress: bool = False,
+        progress_callback: Any = None
     ) -> List[Tuple[Dict[str, Any], float]]:
         if not chunks:
             return []
@@ -93,14 +94,35 @@ class GemmaSearchEngine:
                     formatted = f"Title: {path_str}\nText:\n{snippet}"
                 candidate_texts.append(formatted.strip())
 
-            c_vecs = self.model.encode(
-                candidate_texts,
-                prompt_name=d_p,
-                truncate_dim=self.dim,
-                normalize_embeddings=True,
-                batch_size=self.batch_size,
-                show_progress_bar=show_progress
-            )
+            total_chunks = len(candidate_texts)
+            if progress_callback and total_chunks > self.batch_size:
+                # Micro-batch encoding with progress callback
+                total_batches = (total_chunks + self.batch_size - 1) // self.batch_size
+                all_vecs = []
+                for b_idx in range(total_batches):
+                    start_i = b_idx * self.batch_size
+                    end_i = min(start_i + self.batch_size, total_chunks)
+                    batch_texts = candidate_texts[start_i:end_i]
+                    b_vecs = self.model.encode(
+                        batch_texts,
+                        prompt_name=d_p,
+                        truncate_dim=self.dim,
+                        normalize_embeddings=True,
+                        batch_size=self.batch_size,
+                        show_progress_bar=False
+                    )
+                    all_vecs.append(b_vecs)
+                    progress_callback(b_idx + 1, total_batches, end_i, total_chunks)
+                c_vecs = np.vstack(all_vecs)
+            else:
+                c_vecs = self.model.encode(
+                    candidate_texts,
+                    prompt_name=d_p,
+                    truncate_dim=self.dim,
+                    normalize_embeddings=True,
+                    batch_size=self.batch_size,
+                    show_progress_bar=show_progress
+                )
 
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
