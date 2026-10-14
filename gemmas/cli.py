@@ -135,16 +135,34 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Matryoshka representation dimension (default: 256 for maximum speed)"
     )
     parser.add_argument(
+        "--strategy",
+        choices=["sentences", "lines", "auto"],
+        default="sentences",
+        help="Chunking strategy: 'sentences' (paragraph-aligned sentence accumulation, default), 'lines' (fixed line window), or 'auto' (sentences for text, lines for code)"
+    )
+    parser.add_argument(
+        "--min-sentences",
+        type=int,
+        default=5,
+        help="Minimum complete sentences per chunk for sentence strategy (default: 5)"
+    )
+    parser.add_argument(
+        "--sentence-overlap",
+        type=int,
+        default=3,
+        help="Sentence overlap between consecutive chunks for sentence strategy (default: 3)"
+    )
+    parser.add_argument(
         "--chunk-lines",
         type=int,
         default=35,
-        help="Sliding chunk window size in lines (default: 35)"
+        help="Sliding chunk window size in lines for lines strategy (default: 35)"
     )
     parser.add_argument(
         "--overlap",
         type=int,
-        default=10,
-        help="Overlap between consecutive chunks in lines (default: 10)"
+        default=3,
+        help="Overlap between consecutive chunks in lines for lines strategy (default: 3)"
     )
     parser.add_argument(
         "--batch-size",
@@ -239,7 +257,14 @@ def main(argv: List[str] | None = None) -> int:
     # 2. Chunk files
     all_chunks = []
     for f in files:
-        all_chunks.extend(chunk_file(f, chunk_lines=args.chunk_lines, overlap=args.overlap))
+        all_chunks.extend(chunk_file(
+            f,
+            strategy=args.strategy,
+            chunk_lines=args.chunk_lines,
+            overlap=args.overlap,
+            min_sentences=args.min_sentences,
+            sentence_overlap=args.sentence_overlap
+        ))
 
     if not all_chunks:
         if args.json:

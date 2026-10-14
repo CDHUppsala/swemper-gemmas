@@ -60,14 +60,18 @@ options:
   -i, --interactive     Interactive split-view TUI to browse and inspect full chunks
   -H, --heat            Run second-pass line-level semantic heatmap to highlight key lines
   --heat-threshold N    Threshold for line highlighting (default: 0.70)
+  --strategy {sentences,lines,auto}
+                        Chunking strategy (default: sentences)
+  --min-sentences N     Minimum sentences per chunk in sentence strategy (default: 5)
+  --sentence-overlap N  Sentence overlap between consecutive chunks (default: 3)
+  --chunk-lines N       Chunk window size in lines for lines strategy (default: 35)
+  --overlap N           Overlap between chunks in lines for lines strategy (default: 3)
   --cooldown N          Daemon inactivity cooldown in seconds (default: 300 = 5 min)
   --no-daemon           Bypass background daemon and run model directly in-process
   --mode {auto,code,text}
                         Search mode (default: auto)
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
-  --chunk-lines N       Chunk window size in lines (default: 35)
-  --overlap N           Overlap between chunks in lines (default: 10)
-  --batch-size N        Batch size for inference (default: 32)
+  --batch-size N        Batch size for inference (default: 64)
   --max-seq-len N       Max token length to bound memory (default: 512)
   --json                Output structured JSON
   -v, --version         Show version
