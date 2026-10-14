@@ -1,6 +1,6 @@
-"""
-gemmas.cli - Command-line interface for Gemma semantic search.
-"""
+import os
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 import sys
 import time
@@ -66,6 +66,18 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         type=int,
         default=10,
         help="Overlap between consecutive chunks in lines (default: 10)"
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=32,
+        help="Inference batch size (default: 32; reduce if VRAM is constrained)"
+    )
+    parser.add_argument(
+        "--max-seq-len",
+        type=int,
+        default=512,
+        help="Maximum sequence length in tokens to bound memory (default: 512)"
     )
     parser.add_argument(
         "--device",
@@ -134,14 +146,17 @@ def main(argv: List[str] | None = None) -> int:
     engine = GemmaSearchEngine(
         model_name=args.model,
         device=args.device,
-        dim=args.dim
+        dim=args.dim,
+        batch_size=args.batch_size,
+        max_seq_length=args.max_seq_len
     )
 
     results = engine.search(
         query=args.query,
         chunks=all_chunks,
         mode=search_mode,
-        limit=args.limit
+        limit=args.limit,
+        show_progress=(not args.json and len(all_chunks) > 50)
     )
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000
