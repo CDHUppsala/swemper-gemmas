@@ -253,7 +253,9 @@ def main(argv: List[str] | None = None) -> int:
     if search_mode == "auto":
         search_mode = infer_mode(files)
 
-    if not args.json and not args.interactive:
+    show_feedback = not args.json
+
+    if show_feedback:
         sys.stderr.write(f"[*] Scanned {len(files)} files -> {len(all_chunks)} candidate chunks\n")
 
     # 4. Search Execution (Daemon IPC or in-process)
@@ -267,7 +269,7 @@ def main(argv: List[str] | None = None) -> int:
             dim=args.dim,
             batch_size=args.batch_size,
             max_seq_length=args.max_seq_len,
-            verbose=(not args.json and not args.interactive)
+            verbose=show_feedback
         )
         if ready:
             resp = daemon_search_rpc({
@@ -278,7 +280,7 @@ def main(argv: List[str] | None = None) -> int:
                 "limit": args.limit,
                 "dim": args.dim,
                 "heat": args.heat
-            }, timeout=180.0, show_feedback=(not args.json and not args.interactive))
+            }, timeout=180.0, show_feedback=show_feedback)
             if resp and resp.get("status") == "ok":
                 results = []
                 for m in resp.get("matches", []):
@@ -289,7 +291,7 @@ def main(argv: List[str] | None = None) -> int:
                         }
                     results.append((c, m["score"]))
             else:
-                if not args.json:
+                if show_feedback:
                     sys.stderr.write("[-] Daemon RPC returned error, falling back to local engine.\n")
 
     if results is None:
@@ -306,9 +308,11 @@ def main(argv: List[str] | None = None) -> int:
             chunks=all_chunks,
             mode=search_mode,
             limit=args.limit,
-            show_progress=(not args.json and not args.interactive and len(all_chunks) > 50)
+            show_progress=(show_feedback and len(all_chunks) > 50)
         )
         if args.heat and results:
+            if show_feedback:
+                sys.stderr.write("[*] Pass 2: Computing line-level saliency heatmaps...\n")
             engine.compute_line_saliency(
                 query=args.query,
                 chunks=[r[0] for r in results],
@@ -319,6 +323,8 @@ def main(argv: List[str] | None = None) -> int:
 
     # 5. Output
     if args.interactive:
+        if show_feedback:
+            sys.stderr.write("[*] Launching interactive browser...\n")
         run_interactive_browser(
             results=results,
             query=args.query,
