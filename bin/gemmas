@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# gemmas - Fast semantic search CLI runner
+set -e
+
+BIN_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PACKAGE_DIR="$(dirname "$BIN_DIR")"
+REPO_ROOT="$(dirname "$PACKAGE_DIR")"
+
+export PYTHONPATH="$PACKAGE_DIR${PYTHONPATH:+:$PYTHONPATH}"
+
+# 1. Prefer repo .venv if present
+if [ -f "$REPO_ROOT/.venv/bin/python" ]; then
+    exec "$REPO_ROOT/.venv/bin/python" -m gemmas.cli "$@"
+fi
+
+# 2. Or prefer uv if installed
+if command -v uv >/dev/null 2>&1; then
+    exec uv run --project "$PACKAGE_DIR" gemmas "$@"
+fi
+
+# 3. Fallback to system python3
+exec python3 -m gemmas.cli "$@"
