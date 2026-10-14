@@ -12,6 +12,7 @@ from . import __version__
 from .chunker import collect_files, chunk_file, infer_mode
 from .searcher import GemmaSearchEngine
 from .formatter import format_terminal_output, format_json_output
+from .interactive import run_interactive_browser
 
 def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -92,6 +93,11 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="HuggingFace model identifier or local path (default: google/embeddinggemma-2)"
     )
     parser.add_argument(
+        "-i", "--interactive",
+        action="store_true",
+        help="Launch interactive terminal browser to navigate matches and inspect full chunks with arrow keys"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -156,13 +162,20 @@ def main(argv: List[str] | None = None) -> int:
         chunks=all_chunks,
         mode=search_mode,
         limit=args.limit,
-        show_progress=(not args.json and len(all_chunks) > 50)
+        show_progress=(not args.json and not args.interactive and len(all_chunks) > 50)
     )
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000
 
     # 5. Output
-    if args.json:
+    if args.interactive:
+        run_interactive_browser(
+            results=results,
+            query=args.query,
+            mode=search_mode,
+            dim_size=args.dim
+        )
+    elif args.json:
         sys.stdout.write(format_json_output(
             results=results,
             query=args.query,

@@ -58,11 +58,14 @@ options:
   -h, --help            Show help message
   -n, --limit LIMIT     Max matches to return (default: 5)
   -e, --ext EXT         Comma-separated extensions (e.g. 'py,ts,md')
+  -i, --interactive     Interactive split-view TUI to browse and inspect full chunks
   --mode {auto,code,text}
                         Search mode (default: auto)
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
   --chunk-lines N       Chunk window size in lines (default: 35)
   --overlap N           Overlap between chunks in lines (default: 10)
+  --batch-size N        Batch size for inference (default: 32)
+  --max-seq-len N       Max token length to bound memory (default: 512)
   --json                Output structured JSON
   -v, --version         Show version
 ```
@@ -70,6 +73,16 @@ options:
 ---
 
 ## Examples
+
+### Interactive Search Mode (Browse with Arrow Keys)
+```bash
+./gemmas/bin/gemmas "where do we discard short pages" run_pilot.py -i
+```
+- Use `↑`/`↓` (or `j`/`k`) to select a match.
+- The right/bottom pane automatically expands the **full chunk with line numbers**.
+- Use `w`/`s` (or `PgUp`/`PgDn`) to scroll long chunks.
+- Press `o` or `Enter` to open the file directly in `$EDITOR` at that exact line!
+- Press `q` or `ESC` to exit back to the shell.
 
 ### Search Codebase by Concept
 ```bash
