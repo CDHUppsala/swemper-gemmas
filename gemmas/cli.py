@@ -149,8 +149,8 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--batch-size",
         type=int,
-        default=32,
-        help="Inference batch size (default: 32; reduce if VRAM is constrained)"
+        default=64,
+        help="Inference batch size (default: 64; reduce if VRAM is constrained)"
     )
     parser.add_argument(
         "--max-seq-len",

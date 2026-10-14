@@ -75,7 +75,7 @@ class GemmasDaemon:
         model_name: str = "google/embeddinggemma-2",
         device: str = "auto",
         dim: int = 256,
-        batch_size: int = 32,
+        batch_size: int = 64,
         max_seq_length: int = 512
     ):
         self.socket_path = socket_path
@@ -335,7 +335,7 @@ def spawn_daemon(
     model_name: str = "google/embeddinggemma-2",
     device: str = "auto",
     dim: int = 256,
-    batch_size: int = 32,
+    batch_size: int = 64,
     max_seq_length: int = 512
 ) -> None:
     sock_path = get_socket_path()
@@ -383,7 +383,7 @@ def ensure_daemon(
     model_name: str = "google/embeddinggemma-2",
     device: str = "auto",
     dim: int = 256,
-    batch_size: int = 32,
+    batch_size: int = 64,
     max_seq_length: int = 512,
     timeout_sec: float = 35.0,
     verbose: bool = True
@@ -448,6 +448,7 @@ def daemon_search_rpc(
     sock_path = get_socket_path()
     if not sock_path.exists():
         return None
+    last_ui_update = 0.0
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.settimeout(timeout)
@@ -463,18 +464,21 @@ def daemon_search_rpc(
 
             if msg_type == "progress":
                 if show_feedback:
+                    now = time.time()
                     b = msg["batch"]
                     total_b = msg["total_batches"]
                     done = msg["chunks_done"]
                     total = msg["total_chunks"]
-                    pct = int(done / total * 100) if total else 100
-                    bar_w = 20
-                    filled = int(bar_w * (done / total)) if total else bar_w
-                    bar = "█" * filled + "░" * (bar_w - filled)
-                    sys.stderr.write(
-                        f"\r\033[K[*] Daemon encoding: [{bar}] {pct}% ({done}/{total} chunks, batch {b}/{total_b})"
-                    )
-                    sys.stderr.flush()
+                    if done == total or (now - last_ui_update) >= 0.15:
+                        last_ui_update = now
+                        pct = int(done / total * 100) if total else 100
+                        bar_w = 20
+                        filled = int(bar_w * (done / total)) if total else bar_w
+                        bar = "█" * filled + "░" * (bar_w - filled)
+                        sys.stderr.write(
+                            f"\r\033[K[*] Daemon encoding: [{bar}] {pct}% ({done}/{total} chunks, batch {b}/{total_b})"
+                        )
+                        sys.stderr.flush()
 
             elif msg_type == "status":
                 stage = msg.get("stage")
@@ -505,7 +509,7 @@ def main() -> int:
     parser.add_argument("--model", type=str, default="google/embeddinggemma-2")
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--dim", type=int, default=256)
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--max-seq-len", type=int, default=512)
     parser.add_argument("--log-level", type=str, default="INFO")
 

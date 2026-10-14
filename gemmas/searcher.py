@@ -32,7 +32,7 @@ class GemmaSearchEngine:
         model_name: str = "google/embeddinggemma-2",
         device: str = "auto",
         dim: int = 256,
-        batch_size: int = 32,
+        batch_size: int = 64,
         max_seq_length: int = 512
     ):
         self.device = get_device(device)
