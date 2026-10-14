@@ -163,6 +163,8 @@ def run_interactive_browser(
             slice_start = detail_scroll
             slice_end = min(len(chunk_lines), slice_start + visible_code_lines)
 
+            has_heat = bool(line_scores)
+
             for offset, l in enumerate(chunk_lines[slice_start:slice_end]):
                 curr_y = d_y + offset
                 if curr_y >= h - 2:
@@ -171,25 +173,43 @@ def run_interactive_browser(
                 line_no = sel_chunk["start_line"] + line_idx
                 l_score = line_scores.get(line_idx, 0.0)
 
-                if l_score >= 0.78:
-                    lineno_str = f"{line_no:>5} │ ★ {l_score:.3f} │ "
-                    code_attr = (curses.color_pair(1) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
-                    lineno_attr = (curses.color_pair(3) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
-                elif l_score >= heat_threshold:
-                    lineno_str = f"{line_no:>5} │   {l_score:.3f} │ "
-                    code_attr = (curses.color_pair(2) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
-                    lineno_attr = curses.color_pair(2) if curses.has_colors() else curses.A_DIM
+                if has_heat:
+                    if l_score >= 0.78:
+                        score_prefix = f"★ {l_score:.3f} │ "
+                        score_attr = (curses.color_pair(3) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                        code_attr = (curses.color_pair(1) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                    elif l_score >= heat_threshold:
+                        score_prefix = f"  {l_score:.3f} │ "
+                        score_attr = curses.color_pair(2) if curses.has_colors() else curses.A_DIM
+                        code_attr = (curses.color_pair(2) | curses.A_BOLD) if curses.has_colors() else curses.A_BOLD
+                    else:
+                        score_prefix = "        │ "
+                        score_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
+                        code_attr = curses.A_NORMAL
+
+                    lineno_str = f"{line_no:>5} │ "
+                    lineno_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
+                    code_str = l.replace("\t", "    ")
+
+                    try:
+                        stdscr.addstr(curr_y, detail_x, score_prefix, score_attr)
+                        stdscr.addstr(curr_y, detail_x + len(score_prefix), lineno_str, lineno_attr)
+                        avail_w = detail_w - len(score_prefix) - len(lineno_str) - 1
+                        if avail_w > 0:
+                            stdscr.addstr(curr_y, detail_x + len(score_prefix) + len(lineno_str), code_str[:avail_w], code_attr)
+                    except curses.error:
+                        pass
                 else:
                     lineno_str = f"{line_no:>5} │ "
-                    code_attr = curses.A_NORMAL
                     lineno_attr = curses.color_pair(5) if curses.has_colors() else curses.A_DIM
-
-                code_str = l.replace("\t", "    ")
-                try:
-                    stdscr.addstr(curr_y, detail_x, lineno_str, lineno_attr)
-                    stdscr.addstr(curr_y, detail_x + len(lineno_str), code_str[:detail_w - len(lineno_str) - 1], code_attr)
-                except curses.error:
-                    pass
+                    code_str = l.replace("\t", "    ")
+                    try:
+                        stdscr.addstr(curr_y, detail_x, lineno_str, lineno_attr)
+                        avail_w = detail_w - len(lineno_str) - 1
+                        if avail_w > 0:
+                            stdscr.addstr(curr_y, detail_x + len(lineno_str), code_str[:avail_w], curses.A_NORMAL)
+                    except curses.error:
+                        pass
 
             if len(chunk_lines) > visible_code_lines:
                 scroll_indicator = f" [Lines {slice_start + 1}–{slice_end} of {len(chunk_lines)} (Use PgUp/PgDn/w/s to scroll)] "

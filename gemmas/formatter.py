@@ -72,24 +72,36 @@ def format_terminal_output(
         # Print excerpt (up to 14 lines)
         text_lines = chunk["text"].splitlines()
         preview = text_lines[:14]
+        has_heat = bool(line_scores)
+
         for offset, l in enumerate(preview):
             lineno = start + offset
             l_score = line_scores.get(offset, 0.0)
 
-            if l_score >= 0.78:
-                # Hot line: Gold/yellow highlight with star
-                gutter = f"{dim(f'{lineno:>5} │')} " + c(f"★ {l_score:.3f}", "1;33") + " │ "
-                lines.append(f"    {gutter}{bold(l)}")
-            elif l_score >= heat_threshold:
-                # Warm line: Cyan/green highlight
-                gutter = f"{dim(f'{lineno:>5} │')} " + c(f"  {l_score:.3f}", "32") + " │ "
-                lines.append(f"    {gutter}{green(l)}")
+            if has_heat:
+                if l_score >= 0.78:
+                    # Hot line: Star + Score leftmost, bold gold
+                    score_col = c(f"★ {l_score:.3f}", "1;33")
+                    text_part = bold(l)
+                elif l_score >= heat_threshold:
+                    # Warm line: Score leftmost, green
+                    score_col = c(f"  {l_score:.3f}", "32")
+                    text_part = green(l)
+                else:
+                    score_col = "       "
+                    text_part = l
+
+                prefix = f"    {score_col} {dim('│')} {dim(f'{lineno:>5} │')} "
+                lines.append(f"{prefix}{text_part}")
             else:
                 lines.append(f"    {dim(f'{lineno:>5} │')} {l}")
 
         if len(text_lines) > 14:
             remaining = len(text_lines) - 14
-            lines.append(f"    {dim(f'      │ ... ({remaining} more lines)')}")
+            if has_heat:
+                lines.append(f"            {dim('│')} {dim('      │')} ... ({remaining} more lines)")
+            else:
+                lines.append(f"    {dim('      │')} ... ({remaining} more lines)")
 
     lines.append("\n" + "=" * 70)
     footer = f"Scanned {bold(str(total_chunks))} chunks across {bold(str(file_count))} files in {bold(f'{elapsed_ms:.1f}ms')}"
