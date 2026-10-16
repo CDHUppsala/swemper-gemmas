@@ -7,7 +7,7 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 import re
 import warnings
 import logging
-from typing import List, Dict, Any, Tuple
+from typing import List, Dict, Any, Tuple, Optional
 import numpy as np
 import torch
 
@@ -59,6 +59,64 @@ class GemmaSearchEngine:
         # Crucial for preventing CUDA OOMs on large text files:
         # EmbeddingGemma2 config has an unbounded 1e30 default max_seq_length
         self.model.max_seq_length = self.max_seq_length
+
+    def encode_query(self, query: str, mode: str = "code") -> np.ndarray:
+        q_prompt = "CodeRetrieval" if mode == "code" else "Retrieval"
+        available = getattr(self.model, "prompts", {})
+        q_p = q_prompt if q_prompt in available else None
+        with torch.inference_mode():
+            q_vec = self.model.encode(
+                [query],
+                prompt_name=q_p,
+                truncate_dim=self.dim,
+                normalize_embeddings=True,
+                show_progress_bar=False
+            )
+        return q_vec[0]
+
+    def encode_candidate_texts(
+        self,
+        candidate_texts: List[str],
+        batch_size: Optional[int] = None,
+        progress_callback: Any = None
+    ) -> np.ndarray:
+        if not candidate_texts:
+            return np.empty((0, self.dim), dtype=np.float32)
+        bs = batch_size or self.batch_size
+        available = getattr(self.model, "prompts", {})
+        d_p = "document" if "document" in available else None
+
+        total = len(candidate_texts)
+        if progress_callback and total > bs:
+            total_batches = (total + bs - 1) // bs
+            all_vecs = []
+            for b_idx in range(total_batches):
+                start_i = b_idx * bs
+                end_i = min(start_i + bs, total)
+                batch_texts = candidate_texts[start_i:end_i]
+                b_vecs = self.model.encode(
+                    batch_texts,
+                    prompt_name=d_p,
+                    truncate_dim=self.dim,
+                    normalize_embeddings=True,
+                    batch_size=bs,
+                    show_progress_bar=False
+                )
+                all_vecs.append(b_vecs)
+                progress_callback(b_idx + 1, total_batches, end_i, total)
+            res = np.vstack(all_vecs)
+        else:
+            res = self.model.encode(
+                candidate_texts,
+                prompt_name=d_p,
+                truncate_dim=self.dim,
+                normalize_embeddings=True,
+                batch_size=bs,
+                show_progress_bar=False
+            )
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return res
 
     def search(
         self,

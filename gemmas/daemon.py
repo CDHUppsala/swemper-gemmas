@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Dict, Any, List, Optional, Tuple
 
 import torch
+import numpy as np
 
 # Internal imports
 from .searcher import GemmaSearchEngine, get_device
@@ -254,6 +255,67 @@ class GemmasDaemon:
                     "status": "ok",
                     "matches": matches,
                     "vram": self.get_vram_info()
+                })
+
+            elif action == "encode_query":
+                query = req["query"]
+                mode = req.get("mode", "code")
+                dim = req.get("dim", self.dim)
+                orig_dim = self.engine.dim
+                self.engine.dim = dim
+                vec = self.engine.encode_query(query, mode=mode)
+                self.engine.dim = orig_dim
+                send_msg(conn, {
+                    "status": "ok",
+                    "vector": vec.tolist()
+                })
+
+            elif action == "encode_chunks":
+                texts = req["texts"]
+                dim = req.get("dim", self.dim)
+                batch_size = req.get("batch_size", self.batch_size)
+                orig_dim = self.engine.dim
+                self.engine.dim = dim
+
+                def on_encode_progress(batch_num: int, total_batches: int, done_chunks: int, total_chunks: int) -> None:
+                    try:
+                        send_msg(conn, {
+                            "type": "progress",
+                            "batch": batch_num,
+                            "total_batches": total_batches,
+                            "chunks_done": done_chunks,
+                            "total_chunks": total_chunks
+                        })
+                    except OSError:
+                        pass
+
+                vecs = self.engine.encode_candidate_texts(
+                    candidate_texts=texts,
+                    batch_size=batch_size,
+                    progress_callback=on_encode_progress
+                )
+                self.engine.dim = orig_dim
+                send_msg(conn, {
+                    "type": "result",
+                    "status": "ok",
+                    "vectors": vecs.tolist(),
+                    "vram": self.get_vram_info()
+                })
+
+            elif action == "line_saliency":
+                query = req["query"]
+                chunks = req["chunks"]
+                mode = req.get("mode", "code")
+                dehyphen = req.get("dehyphen", True)
+                self.engine.compute_line_saliency(
+                    query=query,
+                    chunks=chunks,
+                    mode=mode,
+                    dehyphen=dehyphen
+                )
+                send_msg(conn, {
+                    "status": "ok",
+                    "chunks": chunks
                 })
 
             else:
@@ -502,6 +564,96 @@ def daemon_search_rpc(
     except Exception as e:
         logger.debug(f"RPC search error: {e}")
         return None
+
+def daemon_encode_query_rpc(
+    query: str,
+    mode: str = "code",
+    dim: int = 256,
+    timeout: float = 15.0
+) -> Optional[np.ndarray]:
+    resp = daemon_rpc({
+        "action": "encode_query",
+        "query": query,
+        "mode": mode,
+        "dim": dim
+    }, timeout=timeout)
+    if resp and resp.get("status") == "ok" and "vector" in resp:
+        return np.array(resp["vector"], dtype=np.float32)
+    return None
+
+def daemon_encode_chunks_rpc(
+    texts: List[str],
+    dim: int = 256,
+    batch_size: int = 64,
+    show_feedback: bool = True,
+    timeout: float = 600.0
+) -> Optional[np.ndarray]:
+    sock_path = get_socket_path()
+    if not sock_path.exists():
+        return None
+    last_ui_update = 0.0
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(str(sock_path))
+        send_msg(s, {
+            "action": "encode_chunks",
+            "texts": texts,
+            "dim": dim,
+            "batch_size": batch_size
+        })
+
+        while True:
+            msg = recv_msg(s)
+            if not msg:
+                break
+            msg_type = msg.get("type")
+            if msg_type == "progress":
+                if show_feedback:
+                    now = time.time()
+                    done = msg.get("chunks_done", 0)
+                    total = msg.get("total_chunks", len(texts))
+                    if done == total or (now - last_ui_update) >= 0.15:
+                        last_ui_update = now
+                        pct = int(done / total * 100) if total else 100
+                        bar_w = 25
+                        filled = int(bar_w * (done / total)) if total else bar_w
+                        bar = "█" * filled + "░" * (bar_w - filled)
+                        sys.stderr.write(
+                            f"\r\033[K[*] Indexing chunks: [{bar}] {pct}% ({done}/{total} chunks)"
+                        )
+                        sys.stderr.flush()
+            elif msg_type == "result" or "vectors" in msg:
+                if show_feedback:
+                    sys.stderr.write("\r\033[K")
+                    sys.stderr.flush()
+                s.close()
+                return np.array(msg["vectors"], dtype=np.float32)
+        s.close()
+        return None
+    except Exception as e:
+        logger.debug(f"RPC encode error: {e}")
+        return None
+
+def daemon_line_saliency_rpc(
+    query: str,
+    chunks: List[Dict[str, Any]],
+    mode: str = "code",
+    dehyphen: bool = True,
+    timeout: float = 30.0
+) -> Optional[List[Dict[str, Any]]]:
+    resp = daemon_rpc({
+        "action": "line_saliency",
+        "query": query,
+        "chunks": chunks,
+        "mode": mode,
+        "dehyphen": dehyphen
+    }, timeout=timeout)
+    if resp and resp.get("status") == "ok" and "chunks" in resp:
+        return resp["chunks"]
+    return None
+
+
 
 # --- Entrypoint for python -m gemmas.daemon ---
 

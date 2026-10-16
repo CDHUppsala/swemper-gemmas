@@ -75,14 +75,57 @@ options:
   --dim {256,512,768}   Matryoshka representation dimension (default: 256)
   --batch-size N        Batch size for inference (default: 64)
   --max-seq-len N       Max token length to bound memory (default: 512)
+  --index-dir PATH      Explicit directory containing a LanceDB index to query
+  --no-index            Bypass existing LanceDB index and force on-the-fly chunk scanning
   --json                Output structured JSON
   -v, --version         Show version
+
+Persistent Index Management (LanceDB):
+  gemmas index <path>          Index target directory into central cache (~/.cache/gemmas/indexes/)
+  gemmas index <path> --local  Index target directory alongside data (<path>/.gemmas.lance/)
+  gemmas index <path> --update Incrementally sync modified/added files
+  gemmas index <path> --info   Inspect index statistics and disk footprint
+  gemmas index list            List all known indexes in cache
+  gemmas index <path> --drop   Delete index
 
 Daemon management commands:
   gemmas daemon status  Inspect running daemon, VRAM usage, and idle cooldown countdown
   gemmas daemon stop    Stop daemon immediately and free GPU memory
   gemmas daemon start   Pre-warm daemon and load model in background
   gemmas daemon logs    View daemon log output
+```
+
+---
+
+## Persistent LanceDB Vector Indexing
+
+`gemmas` supports fast **persistent vector indexing** powered by **LanceDB**:
+- **Sub-15ms Latency**: Queries against an indexed corpus skip raw text chunking and scan directly from disk via zero-copy columnar vectors.
+- **Hierarchical Discovery**:
+  1. Checks for local in-tree index `<path>/.gemmas.lance/` (travels with dataset).
+  2. Checks for central cache `~/.cache/gemmas/indexes/<hash>_<name>.lance/` (zero repository clutter).
+  3. Seamlessly falls back to on-the-fly scan if no index exists.
+- **Incremental Sync (`--update`)**: Uses file modification timestamps (`mtime`) to only encode newly added or edited files, purging deleted files automatically.
+
+### Indexing Examples:
+```bash
+# 1. Index corpus into clean central cache (~/.cache/gemmas/indexes/):
+./gemmas/bin/gemmas index data/
+
+# 2. Index corpus directly alongside data (data/.gemmas.lance/):
+./gemmas/bin/gemmas index data/ --local
+
+# 3. Query automatically uses the index (instant 10ms response):
+./gemmas/bin/gemmas "kolera epidemi" data/ -H
+
+# 4. Incrementally update after editing or adding documents:
+./gemmas/bin/gemmas index data/ --update
+
+# 5. List all known indexes and disk usage:
+./gemmas/bin/gemmas index list
+
+# 6. Bypass index when needed:
+./gemmas/bin/gemmas "kolera epidemi" data/ --no-index
 ```
 
 ---

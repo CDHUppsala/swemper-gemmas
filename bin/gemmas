@@ -8,8 +8,10 @@ REPO_ROOT="$(dirname "$PACKAGE_DIR")"
 
 export PYTHONPATH="$PACKAGE_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
-# 1. Prefer repo .venv if present
-if [ -f "$REPO_ROOT/.venv/bin/python" ]; then
+# 1. Prefer package .venv or repo .venv if present
+if [ -f "$PACKAGE_DIR/.venv/bin/python" ]; then
+    exec "$PACKAGE_DIR/.venv/bin/python" -m gemmas.cli "$@"
+elif [ -f "$REPO_ROOT/.venv/bin/python" ]; then
     exec "$REPO_ROOT/.venv/bin/python" -m gemmas.cli "$@"
 fi
 

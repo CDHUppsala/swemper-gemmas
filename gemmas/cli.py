@@ -18,9 +18,129 @@ from .daemon import (
     is_daemon_alive,
     daemon_rpc,
     daemon_search_rpc,
+    daemon_encode_query_rpc,
+    daemon_line_saliency_rpc,
     get_socket_path,
     get_log_path,
 )
+from .index_store import (
+    LanceIndexManager,
+    resolve_index_path,
+    get_cache_index_path,
+    get_local_index_path,
+    list_all_indexes,
+)
+from .indexer import build_index
+
+def handle_index_command(cmd_args: List[str]) -> int:
+    if cmd_args and cmd_args[0] == "list":
+        indexes = list_all_indexes()
+        if not indexes:
+            print("No cached LanceDB indexes found in ~/.cache/gemmas/indexes/")
+            return 0
+        print(f"{'Source Root':<45} {'Files':<8} {'Chunks':<9} {'Size (MB)':<10} {'Index Path'}")
+        print("=" * 110)
+        for idx in indexes:
+            src = idx.get("source_root", "unknown")
+            files = str(idx.get("total_files", 0))
+            chunks = str(idx.get("total_chunks", 0))
+            size = f"{idx.get('disk_size_mb', 0):.2f}"
+            path_str = idx.get("index_path", "")
+            print(f"{src:<45} {files:<8} {chunks:<9} {size:<10} {path_str}")
+        return 0
+
+    parser = argparse.ArgumentParser(
+        prog="gemmas index",
+        description="Build, update, or manage persistent LanceDB vector indexes for gemmas.",
+        epilog=(
+            "Examples:\n"
+            "  gemmas index data/                     # Index into central cache (~/.cache/gemmas/indexes/)\n"
+            "  gemmas index data/ --local             # Index into local data/.gemmas.lance/\n"
+            "  gemmas index data/ --update            # Incrementally sync modified/added files\n"
+            "  gemmas index data/ --info              # Show metadata and statistics for target index\n"
+            "  gemmas index data/ --drop              # Delete target index\n"
+            "  gemmas index list                      # List all known cached indexes\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument("path", type=str, nargs="?", default=".", help="Target directory to index (default: current directory)")
+    parser.add_argument("--local", action="store_true", help="Store index in <path>/.gemmas.lance (alongside data)")
+    parser.add_argument("--index-dir", type=str, default=None, help="Explicit destination directory for Lance index")
+    parser.add_argument("--update", action="store_true", help="Incremental update: only re-index new or modified files")
+    parser.add_argument("--overwrite", action="store_true", help="Overwrite existing index and rebuild from scratch")
+    parser.add_argument("--info", action="store_true", help="Show index metadata and statistics")
+    parser.add_argument("--drop", action="store_true", help="Delete the index")
+    parser.add_argument("-e", "--ext", type=str, default=None, help="Comma-separated file extensions to include")
+    parser.add_argument("--strategy", choices=["sentences", "lines", "auto"], default="sentences")
+    parser.add_argument("--min-sentences", type=int, default=5)
+    parser.add_argument("--sentence-overlap", type=int, default=3)
+    parser.add_argument("--chunk-lines", type=int, default=35)
+    parser.add_argument("--overlap", type=int, default=3)
+    parser.add_argument("--dim", type=int, choices=[256, 512, 768], default=256)
+    parser.add_argument("--dehyphen", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--max-seq-len", type=int, default=512)
+    parser.add_argument("--model", type=str, default="google/embeddinggemma-2")
+    parser.add_argument("--device", type=str, default="auto")
+    parser.add_argument("--cooldown", type=int, default=300)
+    parser.add_argument("--no-daemon", action="store_true")
+
+    args = parser.parse_args(cmd_args)
+    target_p = Path(args.path).resolve()
+
+    if args.info or args.drop:
+        idx_p = resolve_index_path(target_p, explicit_dir=args.index_dir)
+        if not idx_p or not idx_p.exists():
+            print(f"No existing index found for '{args.path}'.")
+            return 1
+        mgr = LanceIndexManager(idx_p)
+        if args.drop:
+            mgr.drop()
+            print(f"Deleted index at '{idx_p}'.")
+            return 0
+        if args.info:
+            meta = mgr.get_metadata()
+            total_bytes = sum(f.stat().st_size for f in idx_p.rglob("*") if f.is_file())
+            mb = round(total_bytes / (1024 * 1024), 2)
+            print(f"Index Location:    {idx_p}")
+            print(f"Source Root:       {meta.get('source_root', str(target_p))}")
+            print(f"Model:             {meta.get('model_name', 'google/embeddinggemma-2')}")
+            print(f"Dimension:         {meta.get('dim', 256)}d")
+            print(f"Strategy:          {meta.get('strategy', 'sentences')}")
+            print(f"Dehyphenation:     {meta.get('dehyphen', True)}")
+            print(f"Indexed Chunks:    {meta.get('total_chunks', len(mgr.table) if mgr.table else 0)}")
+            print(f"Indexed Files:     {meta.get('total_files', len(mgr.get_indexed_files()))}")
+            print(f"Disk Size:         {mb} MB")
+            indexed_at = meta.get("indexed_at")
+            if indexed_at:
+                print(f"Last Indexed:      {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(indexed_at))}")
+            return 0
+
+    ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
+    res_dest = build_index(
+        target_path=target_p,
+        index_dir=args.index_dir,
+        is_local=args.local,
+        update=args.update,
+        overwrite=args.overwrite,
+        extensions=ext_list,
+        strategy=args.strategy,
+        min_sentences=args.min_sentences,
+        sentence_overlap=args.sentence_overlap,
+        chunk_lines=args.chunk_lines,
+        overlap=args.overlap,
+        dim=args.dim,
+        dehyphen=args.dehyphen,
+        batch_size=args.batch_size,
+        max_seq_len=args.max_seq_len,
+        model_name=args.model,
+        device=args.device,
+        cooldown=args.cooldown,
+        no_daemon=args.no_daemon,
+        show_feedback=True
+    )
+    return 0 if res_dest is not None else 1
+
 
 def handle_daemon_command(cmd_args: List[str]) -> int:
     cmd = cmd_args[0] if cmd_args else "status"
@@ -89,11 +209,17 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         prog="gemmas",
         description="Fast on-the-fly semantic code and text search powered by Google EmbeddingGemma-2.",
         epilog=(
+            "Index management:\n"
+            "  gemmas index <path>          Index target directory into central cache (~/.cache/gemmas/indexes/)\n"
+            "  gemmas index <path> --local  Index target directory alongside data (<path>/.gemmas.lance/)\n"
+            "  gemmas index <path> --update Incrementally sync modified/added files\n"
+            "  gemmas index <path> --info   Inspect index statistics and disk footprint\n"
+            "  gemmas index list            List all known indexes in cache\n\n"
             "Daemon management:\n"
-            "  gemmas daemon status   Check daemon status, idle cooldown, and VRAM\n"
-            "  gemmas daemon stop     Stop daemon immediately and free GPU memory\n"
-            "  gemmas daemon start    Pre-warm daemon and load model in background\n"
-            "  gemmas daemon logs     View recent daemon logs\n"
+            "  gemmas daemon status         Check daemon status, idle cooldown, and VRAM\n"
+            "  gemmas daemon stop           Stop daemon immediately and free GPU memory\n"
+            "  gemmas daemon start          Pre-warm daemon and load model in background\n"
+            "  gemmas daemon logs           View recent daemon logs\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -223,6 +349,17 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Enable/disable automatic soft dehyphenation of line-broken words in text mode (default: enabled; disable with --no-dehyphen)"
     )
     parser.add_argument(
+        "--index-dir",
+        type=str,
+        default=None,
+        help="Explicit directory containing a LanceDB index to query"
+    )
+    parser.add_argument(
+        "--no-index",
+        action="store_true",
+        help="Bypass any existing LanceDB index and force on-the-fly chunk scanning"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -239,123 +376,216 @@ def main(argv: List[str] | None = None) -> int:
     raw_args = list(sys.argv[1:] if argv is None else argv)
     if raw_args and raw_args[0] == "daemon":
         return handle_daemon_command(raw_args[1:])
+    if raw_args and raw_args[0] == "index":
+        return handle_index_command(raw_args[1:])
 
     args = parse_args(argv)
-    target_path = Path(args.path)
+    target_path = Path(args.path).resolve()
 
     if not target_path.exists():
         sys.stderr.write(f"Error: Target path '{args.path}' does not exist.\n")
         return 1
 
-    ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
-
     start_total = time.perf_counter()
-
-    # 1. Collect files
-    files = collect_files(target_path, extensions=ext_list)
-    if not files:
-        if args.json:
-            sys.stdout.write(format_json_output([], args.query, 0, 0, 0.0, args.mode, args.dim) + "\n")
-        else:
-            sys.stderr.write(f"No matching text files found in '{args.path}'.\n")
-        return 0
-
-    # 2. Chunk files
-    all_chunks = []
-    for f in files:
-        all_chunks.extend(chunk_file(
-            f,
-            strategy=args.strategy,
-            chunk_lines=args.chunk_lines,
-            overlap=args.overlap,
-            min_sentences=args.min_sentences,
-            sentence_overlap=args.sentence_overlap
-        ))
-
-    if not all_chunks:
-        if args.json:
-            sys.stdout.write(format_json_output([], args.query, 0, len(files), 0.0, args.mode, args.dim) + "\n")
-        else:
-            sys.stderr.write(f"No non-empty chunks found across {len(files)} files.\n")
-        return 0
-
-    # 3. Determine search mode
-    search_mode = args.mode
-    if search_mode == "auto":
-        search_mode = infer_mode(files)
-
     show_feedback = not args.json
 
-    if show_feedback:
-        sys.stderr.write(f"[*] Scanned {len(files)} files -> {len(all_chunks)} candidate chunks\n")
+    # 1. Check for persistent LanceDB index (Hierarchical Discovery)
+    idx_path = None
+    if not args.no_index:
+        idx_path = resolve_index_path(target_path, explicit_dir=args.index_dir)
 
-    # 4. Search Execution (Daemon IPC or in-process)
     results = None
-    if not args.no_daemon:
-        # Check or launch daemon
-        ready = ensure_daemon(
-            cooldown=args.cooldown,
-            model_name=args.model,
-            device=args.device,
-            dim=args.dim,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_len,
-            verbose=show_feedback
-        )
-        if ready:
-            resp = daemon_search_rpc({
-                "action": "search",
-                "query": args.query,
-                "chunks": all_chunks,
-                "mode": search_mode,
-                "limit": args.limit,
-                "dim": args.dim,
-                "heat": args.heat,
-                "dehyphen": args.dehyphen
-            }, timeout=180.0, show_feedback=show_feedback)
-            if resp and resp.get("status") == "ok":
-                results = []
-                for m in resp.get("matches", []):
-                    c = m["chunk"]
-                    if "line_scores" in c and isinstance(c["line_scores"], dict):
-                        c["line_scores"] = {
-                            int(k): float(v) for k, v in c["line_scores"].items() if str(k).isdigit()
-                        }
-                    results.append((c, m["score"]))
-            else:
-                if show_feedback:
-                    sys.stderr.write("[-] Daemon RPC returned error, falling back to local engine.\n")
+    total_chunks_count = 0
+    file_count = 0
+    search_mode = args.mode
 
-    if results is None:
-        # Local in-process fallback
-        engine = GemmaSearchEngine(
-            model_name=args.model,
-            device=args.device,
-            dim=args.dim,
-            batch_size=args.batch_size,
-            max_seq_length=args.max_seq_len
-        )
-        results = engine.search(
-            query=args.query,
-            chunks=all_chunks,
-            mode=search_mode,
-            limit=args.limit,
-            dehyphen=args.dehyphen,
-            show_progress=(show_feedback and len(all_chunks) > 50)
-        )
+    if idx_path is not None:
+        manager = LanceIndexManager(idx_path)
+        meta = manager.get_metadata()
+        if search_mode == "auto":
+            search_mode = meta.get("mode", "text")
+        dim = args.dim if args.dim != 256 else meta.get("dim", 256)
+        source_root = Path(meta.get("source_root", target_path))
+
+        if show_feedback:
+            loc_label = "in-tree local" if ".gemmas.lance" in str(idx_path) else "cached"
+            sys.stderr.write(f"[*] Using {loc_label} LanceDB index at '{idx_path}'\n")
+
+        # Encode query
+        q_vec = None
+        if not args.no_daemon:
+            ready = ensure_daemon(
+                cooldown=args.cooldown,
+                model_name=args.model,
+                device=args.device,
+                dim=dim,
+                batch_size=args.batch_size,
+                max_seq_length=args.max_seq_len,
+                verbose=False
+            )
+            if ready:
+                q_vec = daemon_encode_query_rpc(args.query, mode=search_mode, dim=dim)
+
+        if q_vec is None:
+            engine = GemmaSearchEngine(
+                model_name=args.model,
+                device=args.device,
+                dim=dim,
+                batch_size=args.batch_size,
+                max_seq_length=args.max_seq_len
+            )
+            q_vec = engine.encode_query(args.query, mode=search_mode)
+
+        # Search Lance table
+        raw_matches = manager.search(q_vec, limit=args.limit)
+        results = []
+        for chunk, score in raw_matches:
+            rel_p = chunk.get("path", "")
+            disp_path = str(source_root / rel_p)
+            chunk["path"] = disp_path
+            results.append((chunk, score))
+
+        # Pass 2: Heatmap
         if args.heat and results:
             if show_feedback:
                 sys.stderr.write("[*] Pass 2: Computing line-level saliency heatmaps...\n")
-            engine.compute_line_saliency(
-                query=args.query,
-                chunks=[r[0] for r in results],
-                mode=search_mode,
-                dehyphen=args.dehyphen
+            top_chunks = [r[0] for r in results]
+            heat_applied = False
+            if not args.no_daemon and is_daemon_alive(get_socket_path()):
+                heat_chunks = daemon_line_saliency_rpc(
+                    query=args.query,
+                    chunks=top_chunks,
+                    mode=search_mode,
+                    dehyphen=args.dehyphen
+                )
+                if heat_chunks:
+                    for orig, hc in zip(top_chunks, heat_chunks):
+                        orig["line_scores"] = {
+                            int(k): float(v) for k, v in hc.get("line_scores", {}).items() if str(k).isdigit()
+                        }
+                    heat_applied = True
+
+            if not heat_applied:
+                engine = GemmaSearchEngine(
+                    model_name=args.model,
+                    device=args.device,
+                    dim=dim,
+                    batch_size=args.batch_size,
+                    max_seq_length=args.max_seq_len
+                )
+                engine.compute_line_saliency(
+                    query=args.query,
+                    chunks=top_chunks,
+                    mode=search_mode,
+                    dehyphen=args.dehyphen
+                )
+
+        total_chunks_count = meta.get("total_chunks", len(manager.table) if manager.table is not None else len(results))
+        file_count = meta.get("total_files", len(manager.get_indexed_files()))
+
+    else:
+        # Fallback to On-The-Fly Chunking and Search
+        ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
+        files = collect_files(target_path, extensions=ext_list)
+        if not files:
+            if args.json:
+                sys.stdout.write(format_json_output([], args.query, 0, 0, 0.0, args.mode, args.dim) + "\n")
+            else:
+                sys.stderr.write(f"No matching text files found in '{args.path}'.\n")
+            return 0
+
+        all_chunks = []
+        for f in files:
+            all_chunks.extend(chunk_file(
+                f,
+                strategy=args.strategy,
+                chunk_lines=args.chunk_lines,
+                overlap=args.overlap,
+                min_sentences=args.min_sentences,
+                sentence_overlap=args.sentence_overlap
+            ))
+
+        if not all_chunks:
+            if args.json:
+                sys.stdout.write(format_json_output([], args.query, 0, len(files), 0.0, args.mode, args.dim) + "\n")
+            else:
+                sys.stderr.write(f"No non-empty chunks found across {len(files)} files.\n")
+            return 0
+
+        if search_mode == "auto":
+            search_mode = infer_mode(files)
+
+        if show_feedback:
+            sys.stderr.write(f"[*] Scanned {len(files)} files -> {len(all_chunks)} candidate chunks (on-the-fly)\n")
+            if len(files) >= 50:
+                sys.stderr.write(f"[Tip] Run 'gemmas index {args.path}' to index this corpus for instant queries.\n")
+
+        # 4. Search Execution (Daemon IPC or in-process)
+        if not args.no_daemon:
+            ready = ensure_daemon(
+                cooldown=args.cooldown,
+                model_name=args.model,
+                device=args.device,
+                dim=args.dim,
+                batch_size=args.batch_size,
+                max_seq_length=args.max_seq_len,
+                verbose=show_feedback
             )
+            if ready:
+                resp = daemon_search_rpc({
+                    "action": "search",
+                    "query": args.query,
+                    "chunks": all_chunks,
+                    "mode": search_mode,
+                    "limit": args.limit,
+                    "dim": args.dim,
+                    "heat": args.heat,
+                    "dehyphen": args.dehyphen
+                }, timeout=180.0, show_feedback=show_feedback)
+                if resp and resp.get("status") == "ok":
+                    results = []
+                    for m in resp.get("matches", []):
+                        c = m["chunk"]
+                        if "line_scores" in c and isinstance(c["line_scores"], dict):
+                            c["line_scores"] = {
+                                int(k): float(v) for k, v in c["line_scores"].items() if str(k).isdigit()
+                            }
+                        results.append((c, m["score"]))
+                else:
+                    if show_feedback:
+                        sys.stderr.write("[-] Daemon RPC returned error, falling back to local engine.\n")
+
+        if results is None:
+            engine = GemmaSearchEngine(
+                model_name=args.model,
+                device=args.device,
+                dim=args.dim,
+                batch_size=args.batch_size,
+                max_seq_length=args.max_seq_len
+            )
+            results = engine.search(
+                query=args.query,
+                chunks=all_chunks,
+                mode=search_mode,
+                limit=args.limit,
+                dehyphen=args.dehyphen,
+                show_progress=(show_feedback and len(all_chunks) > 50)
+            )
+            if args.heat and results:
+                if show_feedback:
+                    sys.stderr.write("[*] Pass 2: Computing line-level saliency heatmaps...\n")
+                engine.compute_line_saliency(
+                    query=args.query,
+                    chunks=[r[0] for r in results],
+                    mode=search_mode,
+                    dehyphen=args.dehyphen
+                )
+
+        total_chunks_count = len(all_chunks)
+        file_count = len(files)
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000
 
-    # 5. Output
     if args.interactive:
         if show_feedback:
             sys.stderr.write("[*] Launching interactive browser...\n")
@@ -370,8 +600,8 @@ def main(argv: List[str] | None = None) -> int:
         sys.stdout.write(format_json_output(
             results=results,
             query=args.query,
-            total_chunks=len(all_chunks),
-            file_count=len(files),
+            total_chunks=total_chunks_count,
+            file_count=file_count,
             elapsed_ms=elapsed_ms,
             mode=search_mode,
             dim_size=args.dim,
@@ -381,8 +611,8 @@ def main(argv: List[str] | None = None) -> int:
         sys.stdout.write(format_terminal_output(
             results=results,
             query=args.query,
-            total_chunks=len(all_chunks),
-            file_count=len(files),
+            total_chunks=total_chunks_count,
+            file_count=file_count,
             elapsed_ms=elapsed_ms,
             mode=search_mode,
             dim_size=args.dim,
