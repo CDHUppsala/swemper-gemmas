@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import List
 
 from . import __version__
-from .chunker import collect_files, chunk_file, infer_mode
+from .chunker import collect_files, chunk_file, infer_mode, collect_blacklist_filenames
 from .searcher import GemmaSearchEngine
 from .interactive import run_interactive_browser
 from .formatter import (
@@ -89,6 +89,14 @@ def handle_index_command(cmd_args: List[str]) -> int:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--cooldown", type=int, default=300)
     parser.add_argument("--no-daemon", action="store_true")
+    parser.add_argument(
+        "--blacklist-dir", "--exclude-dir-files", "--exclude-from-dir",
+        dest="blacklist_dirs",
+        action="append",
+        type=str,
+        default=[],
+        help="Exclude files whose filenames occur in this directory from being indexed"
+    )
 
     args = parser.parse_args(cmd_args)
     target_p = Path(args.path).resolve()
@@ -121,6 +129,20 @@ def handle_index_command(cmd_args: List[str]) -> int:
                 print(f"Last Indexed:      {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(indexed_at))}")
             return 0
 
+    blacklist_filenames = set()
+    if args.blacklist_dirs:
+        dirs_to_scan = []
+        for d in args.blacklist_dirs:
+            for part in d.split(","):
+                part = part.strip()
+                if part:
+                    p = Path(part).resolve()
+                    if not p.exists():
+                        sys.stderr.write(f"Error: Blacklist directory '{part}' does not exist.\n")
+                        return 1
+                    dirs_to_scan.append(p)
+        blacklist_filenames = collect_blacklist_filenames(dirs_to_scan)
+
     ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
     res_dest = build_index(
         target_path=target_p,
@@ -142,7 +164,8 @@ def handle_index_command(cmd_args: List[str]) -> int:
         device=args.device,
         cooldown=args.cooldown,
         no_daemon=args.no_daemon,
-        show_feedback=True
+        show_feedback=True,
+        blacklist_filenames=blacklist_filenames
     )
     return 0 if res_dest is not None else 1
 
@@ -393,6 +416,14 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Output results as structured JSON (useful for piping to jq or agents)"
     )
     parser.add_argument(
+        "--blacklist-dir", "--exclude-dir-files", "--exclude-from-dir",
+        dest="blacklist_dirs",
+        action="append",
+        type=str,
+        default=[],
+        help="Recursively collect all filenames in directory and exclude hits with matching filenames (interactive & non-interactive)"
+    )
+    parser.add_argument(
         "-v", "--version",
         action="version",
         version=f"gemmas {__version__}"
@@ -416,6 +447,25 @@ def main(argv: List[str] | None = None) -> int:
 
     start_total = time.perf_counter()
     show_feedback = not (args.json or args.files_with_matches or args.quiet or args.plain)
+
+    # 0. Resolve blacklist directories if specified
+    blacklist_filenames: Set[str] = set()
+    if args.blacklist_dirs:
+        dirs_to_scan = []
+        for d in args.blacklist_dirs:
+            for part in d.split(","):
+                part = part.strip()
+                if part:
+                    p = Path(part).resolve()
+                    if not p.exists():
+                        sys.stderr.write(f"Error: Blacklist directory '{part}' does not exist.\n")
+                        return 1
+                    dirs_to_scan.append(p)
+        blacklist_filenames = collect_blacklist_filenames(dirs_to_scan)
+        if show_feedback and blacklist_filenames:
+            sys.stderr.write(
+                f"[*] Loaded blacklist of {len(blacklist_filenames)} filenames to exclude.\n"
+            )
 
     # 1. Check for persistent LanceDB index (Hierarchical Discovery)
     idx_path = None
@@ -464,14 +514,40 @@ def main(argv: List[str] | None = None) -> int:
             )
             q_vec = engine.encode_query(args.query, mode=search_mode)
 
-        # Search Lance table
-        raw_matches = manager.search(q_vec, limit=args.limit)
-        results = []
-        for chunk, score in raw_matches:
-            rel_p = chunk.get("path", "")
-            disp_path = str(source_root / rel_p)
-            chunk["path"] = disp_path
-            results.append((chunk, score))
+        # Search Lance table (with dynamic over-fetch to satisfy limit when blacklisting)
+        raw_matches = []
+        if manager.table is not None and len(manager.table) > 0:
+            fetch_limit = args.limit
+            if blacklist_filenames:
+                multiplier = 3 if len(blacklist_filenames) < 20 else 5
+                fetch_limit = min(len(manager.table), max(args.limit * multiplier, args.limit + 50))
+
+            while True:
+                candidate_matches = manager.search(q_vec, limit=fetch_limit)
+                raw_matches = []
+                for chunk, score in candidate_matches:
+                    rel_p = chunk.get("path", "")
+                    disp_path = str(source_root / rel_p)
+                    chunk["path"] = disp_path
+
+                    if blacklist_filenames:
+                        fname = Path(disp_path).name
+                        if fname in blacklist_filenames or rel_p in blacklist_filenames:
+                            continue
+
+                    raw_matches.append((chunk, score))
+                    if len(raw_matches) >= args.limit:
+                        break
+
+                if len(raw_matches) >= args.limit or fetch_limit >= len(manager.table) or not candidate_matches:
+                    break
+
+                next_limit = min(len(manager.table), fetch_limit * 3)
+                if next_limit <= fetch_limit:
+                    break
+                fetch_limit = next_limit
+
+        results = raw_matches[:args.limit]
 
         # Pass 2: Heatmap
         if args.heat and results and not (args.files_with_matches or args.quiet):
@@ -515,11 +591,16 @@ def main(argv: List[str] | None = None) -> int:
         # Fallback to On-The-Fly Chunking and Search
         ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
         files = collect_files(target_path, extensions=ext_list)
+        if blacklist_filenames:
+            files = [
+                f for f in files
+                if f.name not in blacklist_filenames and str(f) not in blacklist_filenames
+            ]
         if not files:
             if args.json:
                 sys.stdout.write(format_json_output([], args.query, 0, 0, 0.0, args.mode, args.dim) + "\n")
             else:
-                sys.stderr.write(f"No matching text files found in '{args.path}'.\n")
+                sys.stderr.write(f"No matching text files found in '{args.path}' (after blacklist exclusion).\n")
             return 0
 
         all_chunks = []
@@ -608,6 +689,13 @@ def main(argv: List[str] | None = None) -> int:
                     mode=search_mode,
                     dehyphen=args.dehyphen
                 )
+
+        if blacklist_filenames and results:
+            results = [
+                r for r in results
+                if Path(r[0]["path"]).name not in blacklist_filenames
+                and r[0]["path"] not in blacklist_filenames
+            ][:args.limit]
 
         total_chunks_count = len(all_chunks)
         file_count = len(files)

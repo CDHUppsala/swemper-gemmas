@@ -3,6 +3,7 @@ gemmas.chunker - File discovery and text/code chunking.
 Supports both semantic sentence-aware paragraph chunking and classic sliding line windowing.
 """
 
+import os
 import re
 from pathlib import Path
 from typing import List, Dict, Any, Set, Tuple
@@ -78,6 +79,29 @@ def collect_files(target: Path, extensions: List[str] | None = None) -> List[Pat
             collected.append(p)
 
     return sorted(collected)
+
+def collect_blacklist_filenames(dirs: List[Path | str]) -> Set[str]:
+    """
+    Recursively parse the given directories and return a set of all filenames found.
+    Excludes standard ignored directories (.git, .venv, etc.) and hidden files.
+    """
+    blacklist: Set[str] = set()
+    for d in dirs:
+        p = Path(d).resolve()
+        if not p.exists():
+            continue
+        if p.is_file():
+            blacklist.add(p.name)
+        elif p.is_dir():
+            for root, dirs_list, files in os.walk(p):
+                dirs_list[:] = [
+                    sub for sub in dirs_list
+                    if sub not in DEFAULT_IGNORED_DIRS and not sub.startswith(".")
+                ]
+                for f in files:
+                    if not f.startswith("."):
+                        blacklist.add(f)
+    return blacklist
 
 def infer_mode(files: List[Path]) -> str:
     if not files:

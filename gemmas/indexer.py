@@ -2,7 +2,7 @@ import os
 import sys
 import time
 from pathlib import Path
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Set
 import numpy as np
 
 from .chunker import collect_files, chunk_file, infer_mode
@@ -51,7 +51,8 @@ def build_index(
     device: str = "auto",
     cooldown: int = 300,
     no_daemon: bool = False,
-    show_feedback: bool = True
+    show_feedback: bool = True,
+    blacklist_filenames: Optional[Set[str]] = None
 ) -> Optional[Path]:
     target_resolved = target_path.resolve()
     if not target_resolved.exists():
@@ -84,6 +85,11 @@ def build_index(
 
     # 4. Discover files
     files = collect_files(target_resolved, extensions=extensions)
+    if blacklist_filenames:
+        files = [
+            f for f in files
+            if f.name not in blacklist_filenames and str(f) not in blacklist_filenames
+        ]
     if not files:
         sys.stderr.write(f"[-] No matching text files found in '{target_path}'.\n")
         return None
