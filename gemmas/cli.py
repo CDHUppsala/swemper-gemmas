@@ -719,15 +719,21 @@ def main(argv: List[str] | None = None) -> int:
         return 0
 
     if args.interactive:
-        if show_feedback:
+        if show_feedback and sys.stdout.isatty():
             sys.stderr.write("[*] Launching interactive browser...\n")
-        run_interactive_browser(
+        selected_paths = run_interactive_browser(
             results=results,
             query=args.query,
             mode=search_mode,
             dim_size=args.dim,
             heat_threshold=args.heat_threshold
         )
+        if selected_paths:
+            for p in selected_paths:
+                sys.stdout.write(p + "\n")
+            sys.stdout.flush()
+            return 0
+        return 0 if sys.stdout.isatty() else 1
     elif args.json:
         sys.stdout.write(format_json_output(
             results=results,

@@ -137,15 +137,26 @@ Daemon management commands:
 
 ## Examples
 
-### Interactive Search Mode (Browse with Arrow Keys)
+### Interactive Search Mode & Inclusion Marking (`-i`)
 ```bash
 ./gemmas/bin/gemmas "where do we discard short pages" run_pilot.py -i
 ```
-- Use `↑`/`↓` (or `j`/`k`) to select a match.
-- The right/bottom pane automatically expands the **full chunk with line numbers**.
-- Use `w`/`s` (or `PgUp`/`PgDn`) to scroll long chunks.
-- Press `o` or `Enter` to open the file directly in `$EDITOR` at that exact line!
-- Press `q` or `ESC` to exit back to the shell.
+- **Navigate**: Use `↑`/`↓` (or `j`/`k`) to select a match.
+- **Scroll Chunk**: Use `w`/`s` (or `PgUp`/`PgDn`) to scroll long chunks in the detail pane.
+- **Mark for Inclusion**: Press `Space`, `Tab`, or `m` to toggle inclusion (`[✓]`). Press `a` to mark all, `c` to clear.
+- **Confirm & Output**: Press `Enter` to confirm. Marked file paths are emitted directly to `stdout` (one per line).
+- **Edit**: Press `e` or `o` to jump directly into `$EDITOR` at that exact line.
+- **Cancel**: Press `q` or `ESC` to abort without outputting paths.
+
+#### Pipe Interactive Selections to Other Tools:
+Because `gemmas` decouples the curses terminal (`/dev/tty`) from `stdout`, you can interactively curate files directly within a Unix pipeline:
+```bash
+# Interactively review and copy chosen documents into a curated folder:
+gemmas "kolera epidemi" data/ -i | xargs -I {} cp {} curated_folder/
+
+# Capture interactively reviewed files into a shell variable:
+selected=$(gemmas "tuberkulos sanatorium" data/ -i)
+```
 
 ### Search Codebase by Concept
 ```bash
