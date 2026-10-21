@@ -156,6 +156,9 @@ gemmas "kolera epidemi" data/ -i | xargs -I {} cp {} curated_folder/
 
 # Capture interactively reviewed files into a shell variable:
 selected=$(gemmas "tuberkulos sanatorium" data/ -i)
+
+# Interactively review and pipe structured JSON (only chosen matches) to jq:
+gemmas "kolera epidemi" data/ -i --json | jq '.matches[] | {path: .path, score: .score}'
 ```
 
 ### Search Codebase by Concept

@@ -729,8 +729,28 @@ def main(argv: List[str] | None = None) -> int:
             heat_threshold=args.heat_threshold
         )
         if selected_paths:
-            for p in selected_paths:
-                sys.stdout.write(p + "\n")
+            if args.json:
+                selected_set = set(selected_paths)
+                curated_results = [r for r in results if r[0]["path"] in selected_set]
+                sys.stdout.write(format_json_output(
+                    results=curated_results,
+                    query=args.query,
+                    total_chunks=total_chunks_count,
+                    file_count=len(selected_paths),
+                    elapsed_ms=elapsed_ms,
+                    mode=search_mode,
+                    dim_size=args.dim,
+                    heat_threshold=args.heat_threshold
+                ) + "\n")
+            elif args.compact:
+                selected_set = set(selected_paths)
+                curated_results = [r for r in results if r[0]["path"] in selected_set]
+                out_str = format_compact_output(curated_results)
+                if out_str:
+                    sys.stdout.write(out_str + "\n")
+            else:
+                for p in selected_paths:
+                    sys.stdout.write(p + "\n")
             sys.stdout.flush()
             return 0
         return 0 if sys.stdout.isatty() else 1
