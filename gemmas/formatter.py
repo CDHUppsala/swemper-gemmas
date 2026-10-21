@@ -37,6 +37,34 @@ def format_score(score: float) -> str:
         return cyan(s_str)
     return yellow(s_str)
 
+def format_files_only_output(results: List[Tuple[Dict[str, Any], float]]) -> str:
+    """Print only unique file paths of matching documents, one per line."""
+    if not results:
+        return ""
+    seen = set()
+    unique = []
+    for chunk, _ in results:
+        p = chunk["path"]
+        if p not in seen:
+            seen.add(p)
+            unique.append(p)
+    return "\n".join(unique)
+
+def format_compact_output(results: List[Tuple[Dict[str, Any], float]]) -> str:
+    """Print each match on a single line (score, path:line, brief snippet)."""
+    if not results:
+        return ""
+    lines = []
+    for chunk, score in results:
+        rel_path = chunk["path"]
+        start = chunk["start_line"]
+        text_lines = [l.strip() for l in chunk.get("text", "").splitlines() if l.strip()]
+        snippet = text_lines[0] if text_lines else ""
+        if len(snippet) > 85:
+            snippet = snippet[:82] + "..."
+        lines.append(f"{format_score(score)}  {bold(rel_path)}:{start}  {snippet}")
+    return "\n".join(lines)
+
 def format_terminal_output(
     results: List[Tuple[Dict[str, Any], float]],
     query: str,
@@ -45,15 +73,17 @@ def format_terminal_output(
     elapsed_ms: float,
     mode: str,
     dim_size: int,
-    heat_threshold: float = 0.70
+    heat_threshold: float = 0.70,
+    plain: bool = False
 ) -> str:
     if not results:
         return f"\n{yellow('No matching chunks found for query:')} {bold(repr(query))}\n"
 
     lines = []
-    lines.append(f"\n{bold('🔍 Gemma Semantic Search Results')} {dim(f'({mode} mode, {dim_size}d)')}")
-    lines.append(f"{dim('Query:')} {bold(repr(query))}")
-    lines.append("=" * 70)
+    if not plain:
+        lines.append(f"\n{bold('🔍 Gemma Semantic Search Results')} {dim(f'({mode} mode, {dim_size}d)')}")
+        lines.append(f"{dim('Query:')} {bold(repr(query))}")
+        lines.append("=" * 70)
 
     for rank, (chunk, score) in enumerate(results, 1):
         rel_path = chunk["path"]
@@ -103,9 +133,10 @@ def format_terminal_output(
             else:
                 lines.append(f"    {dim('      │')} ... ({remaining} more lines)")
 
-    lines.append("\n" + "=" * 70)
-    footer = f"Scanned {bold(str(total_chunks))} chunks across {bold(str(file_count))} files in {bold(f'{elapsed_ms:.1f}ms')}"
-    lines.append(footer + "\n")
+    if not plain:
+        lines.append("\n" + "=" * 70)
+        footer = f"Scanned {bold(str(total_chunks))} chunks across {bold(str(file_count))} files in {bold(f'{elapsed_ms:.1f}ms')}"
+        lines.append(footer + "\n")
 
     return "\n".join(lines)
 

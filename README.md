@@ -77,6 +77,10 @@ options:
   --max-seq-len N       Max token length to bound memory (default: 512)
   --index-dir PATH      Explicit directory containing a LanceDB index to query
   --no-index            Bypass existing LanceDB index and force on-the-fly chunk scanning
+  -l, --files           Print only the paths of matching files (one per line, ideal for pipes and xargs)
+  --compact, --oneline  Print each match on a single line (score, path:line, brief snippet)
+  --plain, --no-header  Omit search banner and execution footer for clean scripting output
+  -q, --quiet           Suppress all output; exit with code 0 if matches found, 1 otherwise
   --json                Output structured JSON
   -v, --version         Show version
 

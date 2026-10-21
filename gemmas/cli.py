@@ -11,8 +11,13 @@ from typing import List
 from . import __version__
 from .chunker import collect_files, chunk_file, infer_mode
 from .searcher import GemmaSearchEngine
-from .formatter import format_terminal_output, format_json_output
 from .interactive import run_interactive_browser
+from .formatter import (
+    format_terminal_output,
+    format_json_output,
+    format_compact_output,
+    format_files_only_output,
+)
 from .daemon import (
     ensure_daemon,
     is_daemon_alive,
@@ -360,6 +365,29 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Bypass any existing LanceDB index and force on-the-fly chunk scanning"
     )
     parser.add_argument(
+        "-l", "--files-with-matches", "--files",
+        dest="files_with_matches",
+        action="store_true",
+        help="Print only the paths of matching files (one per line, ideal for pipes and xargs)"
+    )
+    parser.add_argument(
+        "--compact", "--oneline",
+        dest="compact",
+        action="store_true",
+        help="Print each match on a single line (score, path:line, brief snippet)"
+    )
+    parser.add_argument(
+        "--plain", "--no-header",
+        dest="plain",
+        action="store_true",
+        help="Omit search banner and execution footer for clean scripting output"
+    )
+    parser.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="Suppress all standard output; exit with code 0 if matches found, 1 otherwise"
+    )
+    parser.add_argument(
         "--json",
         action="store_true",
         help="Output results as structured JSON (useful for piping to jq or agents)"
@@ -387,7 +415,7 @@ def main(argv: List[str] | None = None) -> int:
         return 1
 
     start_total = time.perf_counter()
-    show_feedback = not args.json
+    show_feedback = not (args.json or args.files_with_matches or args.quiet or args.plain)
 
     # 1. Check for persistent LanceDB index (Hierarchical Discovery)
     idx_path = None
@@ -446,7 +474,7 @@ def main(argv: List[str] | None = None) -> int:
             results.append((chunk, score))
 
         # Pass 2: Heatmap
-        if args.heat and results:
+        if args.heat and results and not (args.files_with_matches or args.quiet):
             if show_feedback:
                 sys.stderr.write("[*] Pass 2: Computing line-level saliency heatmaps...\n")
             top_chunks = [r[0] for r in results]
@@ -571,7 +599,7 @@ def main(argv: List[str] | None = None) -> int:
                 dehyphen=args.dehyphen,
                 show_progress=(show_feedback and len(all_chunks) > 50)
             )
-            if args.heat and results:
+            if args.heat and results and not (args.files_with_matches or args.quiet):
                 if show_feedback:
                     sys.stderr.write("[*] Pass 2: Computing line-level saliency heatmaps...\n")
                 engine.compute_line_saliency(
@@ -585,6 +613,22 @@ def main(argv: List[str] | None = None) -> int:
         file_count = len(files)
 
     elapsed_ms = (time.perf_counter() - start_total) * 1000
+
+    # Output dispatch
+    if args.quiet:
+        return 0 if (results and len(results) > 0) else 1
+
+    if args.files_with_matches:
+        out_str = format_files_only_output(results)
+        if out_str:
+            sys.stdout.write(out_str + "\n")
+        return 0 if results else 1
+
+    if args.compact:
+        out_str = format_compact_output(results)
+        if out_str:
+            sys.stdout.write(out_str + "\n")
+        return 0
 
     if args.interactive:
         if show_feedback:
@@ -616,7 +660,8 @@ def main(argv: List[str] | None = None) -> int:
             elapsed_ms=elapsed_ms,
             mode=search_mode,
             dim_size=args.dim,
-            heat_threshold=args.heat_threshold
+            heat_threshold=args.heat_threshold,
+            plain=args.plain
         ) + "\n")
 
     return 0
