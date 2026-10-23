@@ -77,7 +77,8 @@ options:
   --max-seq-len N       Max token length to bound memory (default: 512)
   --index-dir PATH      Explicit directory containing a LanceDB index to query
   --no-index            Bypass existing LanceDB index and force on-the-fly chunk scanning
-  --blacklist-dir PATH  Recursively collect filenames from directory and exclude matches (also: --exclude-dir-files)
+  --blacklist, --black-list, --blacklist-dir PATH
+                        Exclude hits matching filenames, list files (.txt/.csv), or directories
   -l, --files           Print only the paths of matching files (one per line, ideal for pipes and xargs)
   --compact, --oneline  Print each match on a single line (score, path:line, brief snippet)
   --plain, --no-header  Omit search banner and execution footer for clean scripting output
@@ -179,14 +180,20 @@ gemmas "kolera epidemi" data/ -i --json | jq '.matches[] | {path: .path, score: 
 - Second pass runs in $< 20\text{ms}$ on GPU across the top matches to compute per-line semantic similarity.
 - Top hit lines ($\ge 0.78$) are flagged with `★ score` and highlighted in bold gold/yellow.
 
-### Exclude Previously Reviewed / Blacklisted Files (`--blacklist-dir`)
-Recursively collects all filenames found in a folder (such as an already reviewed or curated directory) and excludes any hits matching those filenames:
+### Exclude Previously Reviewed / Blacklisted Files (`--blacklist` / `--black-list`)
+Excludes documents by direct filename, list file (`.txt`/`.csv`), or directory tree:
 ```bash
-# Exclude documents already present in reviewed_curated/ from search results
-./gemmas/bin/gemmas "koppor vaccinering" data/ --blacklist-dir reviewed_curated/
+# Exclude specific files by filename (comma-separated or multiple flags):
+./gemmas/bin/gemmas "koppor" data/ --black-list Lakartidningen_1918_0652.txt,Lakartidningen_1918_0655.txt
 
-# Works in both interactive (-i) and pipeline (-l) modes
-./gemmas/bin/gemmas "koppor" data/ --blacklist-dir reviewed_curated/ -l
+# Exclude files listed in a text file (one filename per line or CSV):
+./gemmas/bin/gemmas "koppor" data/ --black-list excluded_files.txt
+
+# Exclude documents already present in a directory tree:
+./gemmas/bin/gemmas "koppor vaccinering" data/ --black-list reviewed_curated/
+
+# Works in both interactive (-i) and pipeline (-l) modes:
+./gemmas/bin/gemmas "koppor" data/ --black-list Lakartidningen_1918_0652.txt -l
 ```
 
 ### Pipe JSON Output with Saliency Scores to `jq`

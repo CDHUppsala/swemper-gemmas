@@ -80,27 +80,49 @@ def collect_files(target: Path, extensions: List[str] | None = None) -> List[Pat
 
     return sorted(collected)
 
-def collect_blacklist_filenames(dirs: List[Path | str]) -> Set[str]:
+def collect_blacklist_filenames(items: List[Path | str]) -> Set[str]:
     """
-    Recursively parse the given directories and return a set of all filenames found.
-    Excludes standard ignored directories (.git, .venv, etc.) and hidden files.
+    Collects blacklisted filenames from directories, list files (.txt/.csv), or direct filenames.
+    - If item is an existing directory: recursively collects all filenames in the directory tree.
+    - If item is an existing file: adds the file's basename and parses lines (for .txt/.csv list files).
+    - If item does not exist locally: treats item as a direct filename or path to exclude.
     """
     blacklist: Set[str] = set()
-    for d in dirs:
-        p = Path(d).resolve()
-        if not p.exists():
-            continue
-        if p.is_file():
-            blacklist.add(p.name)
-        elif p.is_dir():
-            for root, dirs_list, files in os.walk(p):
-                dirs_list[:] = [
-                    sub for sub in dirs_list
-                    if sub not in DEFAULT_IGNORED_DIRS and not sub.startswith(".")
-                ]
-                for f in files:
-                    if not f.startswith("."):
-                        blacklist.add(f)
+    for item in items:
+        p = Path(item).resolve()
+        if p.exists():
+            if p.is_dir():
+                for root, dirs_list, files in os.walk(p):
+                    dirs_list[:] = [
+                        sub for sub in dirs_list
+                        if sub not in DEFAULT_IGNORED_DIRS and not sub.startswith(".")
+                    ]
+                    for f in files:
+                        if not f.startswith("."):
+                            blacklist.add(f)
+            elif p.is_file():
+                blacklist.add(p.name)
+                blacklist.add(str(p))
+                blacklist.add(str(item))
+                # Attempt to read lines in case this is a blacklist text or CSV file
+                try:
+                    with open(p, "r", encoding="utf-8", errors="replace") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line or line.startswith("#"):
+                                continue
+                            parts = [line] if "," not in line else [part.strip().strip('"\'') for part in line.split(",")]
+                            for part in parts:
+                                if part and len(part) < 500:
+                                    blacklist.add(Path(part).name)
+                                    blacklist.add(part)
+                except Exception:
+                    pass
+        else:
+            raw_str = str(item).strip().strip('"\'')
+            if raw_str:
+                blacklist.add(Path(raw_str).name)
+                blacklist.add(raw_str)
     return blacklist
 
 def infer_mode(files: List[Path]) -> str:

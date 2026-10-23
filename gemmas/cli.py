@@ -90,12 +90,13 @@ def handle_index_command(cmd_args: List[str]) -> int:
     parser.add_argument("--cooldown", type=int, default=300)
     parser.add_argument("--no-daemon", action="store_true")
     parser.add_argument(
-        "--blacklist-dir", "--exclude-dir-files", "--exclude-from-dir",
-        dest="blacklist_dirs",
+        "--blacklist", "--black-list", "--blacklist-dir",
+        "--exclude-dir-files", "--exclude-from-dir", "--exclude-files",
+        dest="blacklist_items",
         action="append",
         type=str,
         default=[],
-        help="Exclude files whose filenames occur in this directory from being indexed"
+        help="Exclude files matching filenames, list files, or directories from being indexed"
     )
 
     args = parser.parse_args(cmd_args)
@@ -130,18 +131,14 @@ def handle_index_command(cmd_args: List[str]) -> int:
             return 0
 
     blacklist_filenames = set()
-    if args.blacklist_dirs:
-        dirs_to_scan = []
-        for d in args.blacklist_dirs:
-            for part in d.split(","):
+    if args.blacklist_items:
+        items_to_scan = []
+        for entry in args.blacklist_items:
+            for part in entry.replace(",", " ").split():
                 part = part.strip()
                 if part:
-                    p = Path(part).resolve()
-                    if not p.exists():
-                        sys.stderr.write(f"Error: Blacklist directory '{part}' does not exist.\n")
-                        return 1
-                    dirs_to_scan.append(p)
-        blacklist_filenames = collect_blacklist_filenames(dirs_to_scan)
+                    items_to_scan.append(part)
+        blacklist_filenames = collect_blacklist_filenames(items_to_scan)
 
     ext_list = [e.strip() for e in args.ext.split(",")] if args.ext else None
     res_dest = build_index(
@@ -416,12 +413,13 @@ def parse_args(argv: List[str] | None = None) -> argparse.Namespace:
         help="Output results as structured JSON (useful for piping to jq or agents)"
     )
     parser.add_argument(
-        "--blacklist-dir", "--exclude-dir-files", "--exclude-from-dir",
-        dest="blacklist_dirs",
+        "--blacklist", "--black-list", "--blacklist-dir",
+        "--exclude-dir-files", "--exclude-from-dir", "--exclude-files",
+        dest="blacklist_items",
         action="append",
         type=str,
         default=[],
-        help="Recursively collect all filenames in directory and exclude hits with matching filenames (interactive & non-interactive)"
+        help="Exclude hits matching filenames, list files (.txt/.csv), or recursively scanned directories"
     )
     parser.add_argument(
         "-v", "--version",
@@ -448,20 +446,16 @@ def main(argv: List[str] | None = None) -> int:
     start_total = time.perf_counter()
     show_feedback = not (args.json or args.files_with_matches or args.quiet or args.plain)
 
-    # 0. Resolve blacklist directories if specified
+    # 0. Resolve blacklist items if specified (directories, list files, or filenames)
     blacklist_filenames: Set[str] = set()
-    if args.blacklist_dirs:
-        dirs_to_scan = []
-        for d in args.blacklist_dirs:
-            for part in d.split(","):
+    if args.blacklist_items:
+        items_to_scan = []
+        for entry in args.blacklist_items:
+            for part in entry.replace(",", " ").split():
                 part = part.strip()
                 if part:
-                    p = Path(part).resolve()
-                    if not p.exists():
-                        sys.stderr.write(f"Error: Blacklist directory '{part}' does not exist.\n")
-                        return 1
-                    dirs_to_scan.append(p)
-        blacklist_filenames = collect_blacklist_filenames(dirs_to_scan)
+                    items_to_scan.append(part)
+        blacklist_filenames = collect_blacklist_filenames(items_to_scan)
         if show_feedback and blacklist_filenames:
             sys.stderr.write(
                 f"[*] Loaded blacklist of {len(blacklist_filenames)} filenames to exclude.\n"
