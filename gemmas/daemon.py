@@ -377,22 +377,58 @@ class GemmasDaemon:
 
 def is_daemon_alive(socket_path: Optional[Path] = None) -> bool:
     sock_path = socket_path or get_socket_path()
+    pid_path = get_pid_path()
     if not sock_path.exists():
         return False
+
+    # Check if PID is running first
+    pid = None
+    if pid_path.exists():
+        try:
+            pid = int(pid_path.read_text().strip())
+            os.kill(pid, 0)
+        except (ValueError, ProcessLookupError, PermissionError):
+            # Stale PID/socket: process is definitely dead
+            try:
+                sock_path.unlink()
+            except OSError:
+                pass
+            try:
+                pid_path.unlink()
+            except OSError:
+                pass
+            return False
+        except OSError:
+            pass
+
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(0.5)
+        s.settimeout(1.5)
         s.connect(str(sock_path))
         send_msg(s, {"action": "ping"})
         resp = recv_msg(s)
         s.close()
         return bool(resp and resp.get("status") == "ok")
-    except (ConnectionRefusedError, FileNotFoundError, socket.timeout, OSError):
-        # Socket file exists but no process is listening
+    except (ConnectionRefusedError, FileNotFoundError):
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                pass
         try:
             sock_path.unlink()
         except OSError:
             pass
+        return False
+    except (socket.timeout, OSError):
+        # Timeout on busy daemon: if PID is running, daemon is alive and busy
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+                return True
+            except OSError:
+                pass
         return False
 
 def spawn_daemon(
@@ -405,6 +441,15 @@ def spawn_daemon(
 ) -> None:
     sock_path = get_socket_path()
     log_path = get_log_path()
+    pid_path = get_pid_path()
+
+    if pid_path.exists():
+        try:
+            existing_pid = int(pid_path.read_text().strip())
+            os.kill(existing_pid, 0)
+            return
+        except (ValueError, OSError):
+            pass
 
     cmd = [
         sys.executable,

@@ -153,119 +153,121 @@ def build_index(
             f"[*] {action_word} {len(files_to_chunk)} files (out of {len(files)} total) with strategy '{strategy}'...\n"
         )
 
-    all_chunks = []
-    for f in files_to_chunk:
-        chunks = chunk_file(
-            f,
-            strategy=strategy,
-            chunk_lines=chunk_lines,
-            overlap=overlap,
-            min_sentences=min_sentences,
-            sentence_overlap=sentence_overlap
-        )
-        all_chunks.extend(chunks)
-
-    if not all_chunks:
-        if show_feedback:
-            sys.stderr.write("[-] No non-empty chunks found to index.\n")
-        return dest_path
-
-    # 7. Format candidate strings for embedding
+    # 6. Stream chunking and indexing in manageable file batches
+    FILE_BATCH_SIZE = 250
+    total_files_to_chunk = len(files_to_chunk)
+    total_new_chunks = 0
     apply_dehyphen = dehyphen and search_mode != "code"
-    candidate_texts = []
-    for c in all_chunks:
-        path_str = c.get("path", "")
-        snippet = c.get("text", "")
-        if apply_dehyphen:
-            snippet = dehyphenate(snippet)
-        if search_mode == "code":
-            formatted = f"Context: {path_str}:{c.get('start_line', 1)}\nCode:\n{snippet}"
-        else:
-            formatted = f"Title: {path_str}\nText:\n{snippet}"
-        candidate_texts.append(formatted.strip())
+    engine = None
 
-    total_chunks = len(candidate_texts)
-    if show_feedback:
-        sys.stderr.write(f"[*] Encoding {total_chunks} chunks using Gemma (dim: {dim}, batch_size: {batch_size})...\n")
+    num_batches = (total_files_to_chunk + FILE_BATCH_SIZE - 1) // FILE_BATCH_SIZE
 
-    # 8. Encode chunks via Daemon or Local Fallback
-    vecs = None
-    if not no_daemon:
-        ready = ensure_daemon(
-            cooldown=cooldown,
-            model_name=model_name,
-            device=device,
-            dim=dim,
-            batch_size=batch_size,
-            max_seq_length=max_seq_len,
-            verbose=show_feedback
-        )
-        if ready:
-            vecs = daemon_encode_chunks_rpc(
-                texts=candidate_texts,
-                dim=dim,
-                batch_size=batch_size,
-                show_feedback=show_feedback,
-                timeout=max(300.0, total_chunks * 0.5)
+    for batch_idx in range(num_batches):
+        batch_start = batch_idx * FILE_BATCH_SIZE
+        batch_end = min(batch_start + FILE_BATCH_SIZE, total_files_to_chunk)
+        batch_files = files_to_chunk[batch_start:batch_end]
+
+        batch_chunks = []
+        for f in batch_files:
+            chunks = chunk_file(
+                f,
+                strategy=strategy,
+                chunk_lines=chunk_lines,
+                overlap=overlap,
+                min_sentences=min_sentences,
+                sentence_overlap=sentence_overlap
+            )
+            batch_chunks.extend(chunks)
+
+        if not batch_chunks:
+            continue
+
+        candidate_texts = []
+        for c in batch_chunks:
+            path_str = c.get("path", "")
+            snippet = c.get("text", "")
+            if apply_dehyphen:
+                snippet = dehyphenate(snippet)
+            if search_mode == "code":
+                formatted = f"Context: {path_str}:{c.get('start_line', 1)}\nCode:\n{snippet}"
+            else:
+                formatted = f"Title: {path_str}\nText:\n{snippet}"
+            candidate_texts.append(formatted.strip())
+
+        if show_feedback:
+            pct = int((batch_start / total_files_to_chunk) * 100)
+            sys.stderr.write(
+                f"[*] Batch {batch_idx + 1}/{num_batches}: "
+                f"Encoding {len(candidate_texts)} chunks from {len(batch_files)} files ({pct}%)...\n"
             )
 
-    if vecs is None:
-        if show_feedback and not no_daemon:
-            sys.stderr.write("[-] Daemon encoding unavailable, falling back to local engine.\n")
-        engine = GemmaSearchEngine(
-            model_name=model_name,
-            device=device,
-            dim=dim,
-            batch_size=batch_size,
-            max_seq_length=max_seq_len
-        )
-        def on_local_progress(b: int, total_b: int, done: int, total: int) -> None:
-            if show_feedback:
-                pct = int(done / total * 100) if total else 100
-                bar_w = 25
-                filled = int(bar_w * (done / total)) if total else bar_w
-                bar = "█" * filled + "░" * (bar_w - filled)
-                sys.stderr.write(f"\r\033[K[*] Local encoding: [{bar}] {pct}% ({done}/{total} chunks)")
-                sys.stderr.flush()
+        vecs = None
+        if not no_daemon:
+            ready = ensure_daemon(
+                cooldown=cooldown,
+                model_name=model_name,
+                device=device,
+                dim=dim,
+                batch_size=batch_size,
+                max_seq_length=max_seq_len,
+                verbose=False
+            )
+            if ready:
+                vecs = daemon_encode_chunks_rpc(
+                    texts=candidate_texts,
+                    dim=dim,
+                    batch_size=batch_size,
+                    show_feedback=show_feedback,
+                    timeout=max(180.0, len(candidate_texts) * 0.5)
+                )
 
-        vecs = engine.encode_candidate_texts(
-            candidate_texts=candidate_texts,
-            batch_size=batch_size,
-            progress_callback=on_local_progress
-        )
-        if show_feedback:
-            sys.stderr.write("\r\033[K")
-            sys.stderr.flush()
+        if vecs is None:
+            if engine is None:
+                engine = GemmaSearchEngine(
+                    model_name=model_name,
+                    device=device,
+                    dim=dim,
+                    batch_size=batch_size,
+                    max_seq_length=max_seq_len
+                )
+            vecs = engine.encode_candidate_texts(
+                candidate_texts=candidate_texts,
+                batch_size=batch_size,
+                progress_callback=None
+            )
 
-    # 9. Store into LanceDB
-    records = []
-    for c, vec in zip(all_chunks, vecs):
-        full_path = Path(c["path"])
-        try:
-            rel_p = str(full_path.relative_to(target_resolved))
-        except ValueError:
-            rel_p = full_path.name
-        try:
-            st = full_path.stat()
-            mtime = float(st.st_mtime)
-            fsize = int(st.st_size)
-        except OSError:
-            mtime = 0.0
-            fsize = 0
+        # Store batch records into LanceDB
+        records = []
+        for c, vec in zip(batch_chunks, vecs):
+            full_path = Path(c["path"])
+            try:
+                rel_p = str(full_path.relative_to(target_resolved))
+            except ValueError:
+                rel_p = full_path.name
+            try:
+                st = full_path.stat()
+                mtime = float(st.st_mtime)
+                fsize = int(st.st_size)
+            except OSError:
+                mtime = 0.0
+                fsize = 0
 
-        v_list = vec.tolist() if isinstance(vec, np.ndarray) else vec
-        records.append({
-            "id": f"{rel_p}:{c.get('start_line', 1)}",
-            "vector": v_list,
-            "path": rel_p,
-            "start_line": int(c.get("start_line", 1)),
-            "end_line": int(c.get("end_line", 1)),
-            "text": c.get("text", ""),
-            "mtime": mtime,
-            "file_size": fsize,
-        })
+            v_list = vec.tolist() if isinstance(vec, np.ndarray) else vec
+            records.append({
+                "id": f"{rel_p}:{c.get('start_line', 1)}",
+                "vector": v_list,
+                "path": rel_p,
+                "start_line": int(c.get("start_line", 1)),
+                "end_line": int(c.get("end_line", 1)),
+                "text": c.get("text", ""),
+                "mtime": mtime,
+                "file_size": fsize,
+            })
 
-    manager.add_chunks(records, dim=dim)
+        manager.add_chunks(records, dim=dim)
+        total_new_chunks += len(records)
+
+    total_chunks = total_new_chunks
 
     # 10. Save metadata
     total_in_index = len(manager.table) if manager.table is not None else len(records)
