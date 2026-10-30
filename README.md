@@ -1,48 +1,93 @@
-# `gemmas` (Gemma Search)
+# `swemper-gemmas` (`gemmas`)
 
-Fast, on-the-fly semantic code and text search powered by **Google EmbeddingGemma-2** (270M) with Matryoshka 256d/512d representations.
+Fast, on-the-fly and indexed semantic code and text search CLI powered by **Google EmbeddingGemma-2** (270M) with Matryoshka 256d/512d representations and **LanceDB** vector storage.
+
+---
+
+## Origins & Research Context
+
+`gemmas` was originally developed as an experimental semantic search, retrieval, and corpus curation tool within the **SweMPer** research project (*Swedish Medical Periodicals*, 1781–2014, spanning 633,000 pages across 22 historical periodicals). 
+
+In digital humanities research and NLP workflows over historical OCR text, conventional keyword grep struggles with archaic orthography, optical character errors, and line-broken compound words (*samman-sättningar*). `gemmas` was designed to solve this with:
+- Zero-lag zero-index on-the-fly scanning for instant exploration.
+- Persistent sub-15ms vector indexing with LanceDB for large corpora.
+- Soft dehyphenation preserving Swedish compound words across line breaks.
+- Interactive terminal review and inclusion curation (`-i`) that pipes selected files directly into Unix workflows (`xargs`, `cp`, `jq`).
+
+While developed in SweMPer, `gemmas` is a fully standalone, general-purpose CLI for semantic search across both **codebases** (Python, Rust, C++, Go, etc.) and **prose corpora** (research notes, historical archives, documentation).
 
 ---
 
 ## Features
-- **Zero-Index Search**: Instantly searches code and documents on the fly without database setup or indexing lag.
-- **Dual Modality**:
-  - `code` mode: Uses `CodeRetrieval` task prompt for functions, classes, and logic.
-  - `text` mode: Uses `Retrieval` task prompt for historical OCR, documentation, notes, and research papers.
-- **Ultra-Low Resource Footprint**: Runs in `bfloat16` on CUDA in ~540MB VRAM, or on CPU/MPS with minimal memory.
-- **Agent-Ready JSON**: Pass `--json` to pipe structured matches directly to `jq` or autonomous AI agents.
-- **Respects `.gitignore`**: Automatically ignores caches, build directories, and virtual environments.
+
+- **Dual Search Modes**:
+  - **Zero-Index On-The-Fly**: Scan directories or single files instantly without database setup or indexing lag.
+  - **Persistent LanceDB Indexing**: Sub-15ms vector searches over tens of thousands of documents with incremental timestamp-based updates (`--update`).
+- **Dual Modality Task Prompts**:
+  - `code` mode: Uses EmbeddingGemma `CodeRetrieval` task prompt for function definitions, classes, and logic.
+  - `text` mode: Uses `Retrieval` task prompt for prose, historical documents, research notes, and papers.
+- **Interactive Review & Pipeline Curation (`-i`)**:
+  - Split-view curses TUI to navigate matches and inspect full chunk contexts.
+  - Keystroke inclusion marking (`Space`/`Tab`) to select files for downstream processing.
+  - Unix pipe ready: Selected paths are output directly to `stdout` upon pressing `Enter`.
+- **Soft Dehyphenation**:
+  - Automatically reconstructs compound words split across line breaks (common in printed periodicals and OCR text).
+- **Second-Pass Semantic Heatmap (`-H` / `--heat`)**:
+  - Fast line-level second pass highlights key lines with scores in bold gold/yellow.
+- **Autonomous GPU Daemon**:
+  - Keeps the EmbeddingGemma model resident in GPU memory (~540MB in `bfloat16`) for sub-80ms queries.
+  - Shuts down automatically after 5 minutes of inactivity (`--cooldown 300`) to free all VRAM.
+- **Pipeline & Agent Ready**:
+  - Clean non-interactive flags: `-l` (`--files`), `--compact`, `--plain`, `-q` (`--quiet`), and `--json`.
+  - Exclude already curated documents with `--blacklist` / `--black-list` / `--blacklist-dir`.
 
 ---
 
-## Quick Start
+## Installation & Setup
 
-### 1. Direct Execution
+### 1. Using `uv` (Recommended)
 ```bash
-./gemmas/bin/gemmas "where do we discard short pages" run_pilot.py
+# Install globally as a CLI tool:
+uv tool install git+https://github.com/mattslindstrom/swemper-gemmas.git
+
+# Or install editable from a local clone:
+git clone https://github.com/mattslindstrom/swemper-gemmas.git
+cd swemper-gemmas
+uv tool install -e .
 ```
 
-### 2. Using `uv` (Zero-Config Runner)
+### 2. Standard `pip` Installation
 ```bash
-# Run directly from repository:
-uv run --project gemmas gemmas "search query" .
+pip install git+https://github.com/mattslindstrom/swemper-gemmas.git
 
-# Or install globally as a tool:
-uv tool install ./gemmas
-gemmas "search query" .
+# Or for local development:
+pip install -e .
 ```
 
-### 3. Sparse Clone / Standalone Usage
-If you sparse checkout or copy only the `gemmas/` directory onto another machine:
+### 3. Direct Execution via Wrapper Script
+If using the repository directly without installing globally:
 ```bash
-cd gemmas
-uv run gemmas "my query" /path/to/project
+./bin/gemmas "search query" /path/to/files
 ```
 
 ---
 
-## CLI Options
+## Hardware & Memory Guidance
 
+- **Model Footprint**: The EmbeddingGemma-2 270M model runs in `bfloat16` and requires only **~540MB VRAM** on CUDA / Apple Silicon (MPS), or minimal RAM on CPU.
+- **Indexing Large Corpora**:
+  - Default inference batch size is `64`.
+  - On consumer GPUs with **8GB–12GB VRAM** (e.g. RTX 3080/4070), we recommend passing `--batch-size 32` when indexing large text collections to avoid memory spikes from 512-token attention activations:
+    ```bash
+    gemmas index my_corpus/ --batch-size 32
+    ```
+- **Inactivity Cooldown**: The background daemon monitors its idle time and automatically terminates after 5 minutes, completely freeing GPU memory.
+
+---
+
+## Quick Reference
+
+### Command Line Synopsis
 ```text
 usage: gemmas [-h] [-n LIMIT] [-e EXT] [--mode {auto,code,text}]
               [--dim {256,512,768}] [--chunk-lines CHUNK_LINES]
@@ -94,124 +139,88 @@ Persistent Index Management (LanceDB):
   gemmas index list            List all known indexes in cache
   gemmas index <path> --drop   Delete index
 
-Daemon management commands:
-  gemmas daemon status  Inspect running daemon, VRAM usage, and idle cooldown countdown
-  gemmas daemon stop    Stop daemon immediately and free GPU memory
-  gemmas daemon start   Pre-warm daemon and load model in background
-  gemmas daemon logs    View daemon log output
+Daemon Management Commands:
+  gemmas daemon status         Inspect running daemon, VRAM usage, and idle cooldown countdown
+  gemmas daemon stop           Stop daemon immediately and free GPU memory
+  gemmas daemon start          Pre-warm daemon and load model in background
+  gemmas daemon logs           View daemon log output
 ```
 
 ---
 
-## Persistent LanceDB Vector Indexing
+## Practical Examples
 
-`gemmas` supports fast **persistent vector indexing** powered by **LanceDB**:
-- **Sub-15ms Latency**: Queries against an indexed corpus skip raw text chunking and scan directly from disk via zero-copy columnar vectors.
-- **Hierarchical Discovery**:
-  1. Checks for local in-tree index `<path>/.gemmas.lance/` (travels with dataset).
-  2. Checks for central cache `~/.cache/gemmas/indexes/<hash>_<name>.lance/` (zero repository clutter).
-  3. Seamlessly falls back to on-the-fly scan if no index exists.
-- **Incremental Sync (`--update`)**: Uses file modification timestamps (`mtime`) to only encode newly added or edited files, purging deleted files automatically.
-
-### Indexing Examples:
+### 1. Codebase Search
 ```bash
-# 1. Index corpus into clean central cache (~/.cache/gemmas/indexes/):
-./gemmas/bin/gemmas index data/
+# Locate functional logic across a codebase:
+gemmas "where do we validate authentication tokens" src/
 
-# 2. Index corpus directly alongside data (data/.gemmas.lance/):
-./gemmas/bin/gemmas index data/ --local
+# Search specific file types:
+gemmas "retry logic with exponential backoff" . -e .py,.rs
 
-# 3. Query automatically uses the index (instant 10ms response):
-./gemmas/bin/gemmas "kolera epidemi" data/ -H
-
-# 4. Incrementally update after editing or adding documents:
-./gemmas/bin/gemmas index data/ --update
-
-# 5. List all known indexes and disk usage:
-./gemmas/bin/gemmas index list
-
-# 6. Bypass index when needed:
-./gemmas/bin/gemmas "kolera epidemi" data/ --no-index
+# Inspect candidate code chunks interactively:
+gemmas "database connection pool error handling" src/ -i
 ```
 
----
-
-## Examples
-
-### Interactive Search Mode & Inclusion Marking (`-i`)
+### 2. Historical Texts & Digital Humanities Search
 ```bash
-./gemmas/bin/gemmas "where do we discard short pages" run_pilot.py -i
+# Query historical Swedish medical periodicals with line heatmap:
+gemmas "behandling av kolera eller epidemier" corpus/ --mode text -H
+
+# Search with soft dehyphenation for broken compounds:
+gemmas "tuberkulos sanatorievård" corpus/ --dehyphen
+
+# Filter out previously reviewed documents:
+gemmas "smittkoppor vaccination" corpus/ --black-list excluded_files.txt
 ```
-- **Navigate**: Use `↑`/`↓` (or `j`/`k`) to select a match.
-- **Scroll Chunk**: Use `w`/`s` (or `PgUp`/`PgDn`) to scroll long chunks in the detail pane.
-- **Mark for Inclusion**: Press `Space`, `Tab`, or `m` to toggle inclusion (`[✓]`). Press `a` to mark all, `c` to clear.
-- **Confirm & Output**: Press `Enter` to confirm. Marked file paths are emitted directly to `stdout` (one per line).
-- **Edit**: Press `e` or `o` to jump directly into `$EDITOR` at that exact line.
-- **Cancel**: Press `q` or `ESC` to abort without outputting paths.
 
-#### Pipe Interactive Selections to Other Tools:
-Because `gemmas` decouples the curses terminal (`/dev/tty`) from `stdout`, you can interactively curate files directly within a Unix pipeline:
+### 3. Interactive Curation & Unix Pipeline Integration
+`gemmas` cleanly separates curses terminal drawing (`/dev/tty`) from file output (`stdout`). This allows interactive curation directly in Unix pipes:
 ```bash
-# Interactively review and copy chosen documents into a curated folder:
-gemmas "kolera epidemi" data/ -i | xargs -I {} cp {} curated_folder/
+# Browse search hits interactively; mark candidate documents with Space; press Enter:
+gemmas "kolera epidemier" corpus/ -i | xargs -I {} cp {} curated_samples/
 
 # Capture interactively reviewed files into a shell variable:
-selected=$(gemmas "tuberkulos sanatorium" data/ -i)
+reviewed=$(gemmas "sanatorievård" corpus/ -i)
 
-# Interactively review and pipe structured JSON (only chosen matches) to jq:
-gemmas "kolera epidemi" data/ -i --json | jq '.matches[] | {path: .path, score: .score}'
+# Pipe only marked items as structured JSON into jq:
+gemmas "kolera" corpus/ -i --json | jq '.matches[] | {path: .path, score: .score}'
 ```
 
-### Search Codebase by Concept
+### 4. Persistent LanceDB Vector Indexing
 ```bash
-./gemmas/bin/gemmas "where is 8-bit quantization configured" .
+# 1. Build a persistent index in central cache (~/.cache/gemmas/indexes/):
+gemmas index corpus/
+
+# 2. Or index alongside the dataset directory (corpus/.gemmas.lance/):
+gemmas index corpus/ --local
+
+# 3. Subsequent queries execute in < 15ms directly from vector index:
+gemmas "kolera epidemi" corpus/ -H
+
+# 4. Incrementally update only modified or added documents:
+gemmas index corpus/ --update
+
+# 5. List all active indexes:
+gemmas index list
 ```
 
-### Search Historical Swedish Medical Texts
+### 5. Self-Managing Background Daemon
 ```bash
-./gemmas/bin/gemmas "behandling av kolera eller epidemier" TAXONOMY.py --mode text
+# Check daemon memory and idle cooldown timer:
+gemmas daemon status
+
+# Stop daemon manually:
+gemmas daemon stop
+
+# Run completely in-process without daemon:
+gemmas "query" . --no-daemon
 ```
 
-### Search with Second-Pass Line-Level Heatmap Highlighting (`-H` / `--heat`)
-```bash
-./gemmas/bin/gemmas "kolera epidemi" data -H
-```
-- First pass identifies winning 35-line chunk candidates across all files.
-- Second pass runs in $< 20\text{ms}$ on GPU across the top matches to compute per-line semantic similarity.
-- Top hit lines ($\ge 0.78$) are flagged with `★ score` and highlighted in bold gold/yellow.
+---
 
-### Exclude Previously Reviewed / Blacklisted Files (`--blacklist` / `--black-list`)
-Excludes documents by direct filename, list file (`.txt`/`.csv`), or directory tree:
-```bash
-# Exclude specific files by filename (comma-separated or multiple flags):
-./gemmas/bin/gemmas "koppor" data/ --black-list Lakartidningen_1918_0652.txt,Lakartidningen_1918_0655.txt
+## License
 
-# Exclude files listed in a text file (one filename per line or CSV):
-./gemmas/bin/gemmas "koppor" data/ --black-list excluded_files.txt
+This project is licensed under the [MIT License](LICENSE).
 
-# Exclude documents already present in a directory tree:
-./gemmas/bin/gemmas "koppor vaccinering" data/ --black-list reviewed_curated/
-
-# Works in both interactive (-i) and pipeline (-l) modes:
-./gemmas/bin/gemmas "koppor" data/ --black-list Lakartidningen_1918_0652.txt -l
-```
-
-### Pipe JSON Output with Saliency Scores to `jq`
-```bash
-./gemmas/bin/gemmas "kolera epidemi" data -H --limit 1 --json | jq '.matches[0].highlighted_lines'
-```
-
-### Self-Managing Background Daemon & Inactivity Cooldown
-By default, `gemmas` automatically launches a background daemon over a local Unix domain socket (`~/.cache/gemmas/daemon.sock`).
-- **First Search**: Starts daemon and loads Gemma model into GPU memory (~4.5s).
-- **Subsequent Searches**: Run against the warm model in memory (**< 80ms** per search).
-- **Autonomous Cooldown**: The daemon monitors its own idle time. If no queries are received within 5 minutes (`--cooldown 300`), it shuts down automatically and frees all VRAM.
-- **Inspect Daemon**:
-  ```bash
-  ./gemmas/bin/gemmas daemon status
-  ```
-- **Stop Daemon Manually**:
-  ```bash
-  ./gemmas/bin/gemmas daemon stop
-  ```
-- **Run Without Daemon**: Pass `--no-daemon` to execute completely in-process.
+Developed by Matts Lindström as part of the SweMPer research project.
